@@ -45,6 +45,7 @@
     "CenterOffsetY": 0,
     "DeadZonePx": 12,
     "SnapThresholdPx": 130,
-    "SnapStrength": 0.9
+    "SnapStrength": 0.9,
+    "SnapOnReleaseButton": "Left"
   }
 }

@@ -89,4 +89,10 @@ public sealed class AimAssistConfig
     // which is what was causing the oscillation.
     public int SnapThresholdPx { get; set; } = 130;
     public double SnapStrength { get; set; } = 0.9;
+
+    // Mouse button name (Left/Right/Middle). When set, the aim isn't pulled
+    // continuously at all - it only snaps once, right when this button is
+    // released (e.g. releasing LMB to fire an arrow). Empty = continuous pull
+    // (the Strength/Smoothing/etc knobs above) instead.
+    public string SnapOnReleaseButton { get; set; } = "";
 }

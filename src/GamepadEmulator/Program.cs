@@ -38,6 +38,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly Dictionary<MouseButtons, string> _mouseButtonToButton = new();
     private Keys _leftUp, _leftDown, _leftLeft, _leftRight;
     private double? _smoothedAimX, _smoothedAimY;
+    private MouseButtons? _snapOnReleaseButton;
 
     private bool _enabled = true;
     private bool _aimAssistEnabled;
@@ -106,6 +107,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _aimAssistToggleKey = Enum.TryParse<Keys>(_config.AimAssist.ToggleHotkey, ignoreCase: true, out var aimToggle) ? aimToggle : Keys.F10;
         _colorProbeKey = Enum.TryParse<Keys>(_config.AimAssist.ProbeHotkey, ignoreCase: true, out var probe) ? probe : Keys.F11;
         _aimAssistEnabled = _config.AimAssist.Enabled;
+        _snapOnReleaseButton = Enum.TryParse<MouseButtons>(_config.AimAssist.SnapOnReleaseButton, ignoreCase: true, out var snapBtn)
+            ? snapBtn
+            : null;
 
         _leftUp = ParseKey(_config.LeftStick.Up, Keys.W);
         _leftDown = ParseKey(_config.LeftStick.Down, Keys.S);
@@ -237,6 +241,12 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnMouseButton(MouseButtons button, bool pressed)
     {
+        if (!pressed && _snapOnReleaseButton == button
+            && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
+        {
+            PerformSnapCorrection();
+        }
+
         if (pressed && !IsActiveNow())
             return;
 
@@ -281,6 +291,25 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _controller.SetRightStick(outX, outY);
     }
 
+    private Rectangle GetAimRegion(out int radius, out int side)
+    {
+        var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+        radius = Math.Max(10, _config.AimAssist.DetectionRadius);
+        side = radius * 2;
+        var crosshairX = screen.X + screen.Width / 2 + _config.AimAssist.CenterOffsetX;
+        var crosshairY = screen.Y + screen.Height / 2 + _config.AimAssist.CenterOffsetY;
+        return new Rectangle(crosshairX - radius, crosshairY - radius, side, side);
+    }
+
+    private Point? DetectMarker(Rectangle region)
+    {
+        using var capture = ScreenCapture.CaptureRegion(region);
+        var targetColor = System.Drawing.Color.FromArgb(
+            _config.AimAssist.ColorR, _config.AimAssist.ColorG, _config.AimAssist.ColorB);
+        return TargetDetector.FindNearestMatch(
+            capture, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
+    }
+
     private void OnAimAssistTick()
     {
         if (!_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
@@ -289,23 +318,14 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             return;
         }
 
-        var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-        var radius = Math.Max(10, _config.AimAssist.DetectionRadius);
-        var side = radius * 2;
-        var crosshairX = screen.X + screen.Width / 2 + _config.AimAssist.CenterOffsetX;
-        var crosshairY = screen.Y + screen.Height / 2 + _config.AimAssist.CenterOffsetY;
-        var region = new Rectangle(crosshairX - radius, crosshairY - radius, side, side);
+        var region = GetAimRegion(out var radius, out var side);
 
         if (_config.AimAssist.ShowOverlay)
             _overlay.ShowAt(region.Left, region.Top, side, side);
         else
             _overlay.Hide();
 
-        using var capture = ScreenCapture.CaptureRegion(region);
-        var targetColor = System.Drawing.Color.FromArgb(
-            _config.AimAssist.ColorR, _config.AimAssist.ColorG, _config.AimAssist.ColorB);
-        var marker = TargetDetector.FindNearestMatch(
-            capture, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
+        var marker = DetectMarker(region);
 
         if (marker is not { } markerPoint)
         {
@@ -320,6 +340,11 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         var smoothing = Math.Clamp(_config.AimAssist.Smoothing, 0.0, 0.98);
         _smoothedAimX = _smoothedAimX is { } sx ? sx * smoothing + rawAimX * (1 - smoothing) : rawAimX;
         _smoothedAimY = _smoothedAimY is { } sy ? sy * smoothing + rawAimY * (1 - smoothing) : rawAimY;
+
+        // In snap-on-release mode the pull only happens in PerformSnapCorrection -
+        // here we just keep the overlay/smoothed estimate fresh for that moment.
+        if (_snapOnReleaseButton != null)
+            return;
 
         var centerX = side / 2.0;
         var centerY = side / 2.0;
@@ -351,6 +376,29 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         }
 
         MouseInput.MoveRelative(moveX, moveY);
+    }
+
+    private void PerformSnapCorrection()
+    {
+        var region = GetAimRegion(out var radius, out var side);
+        var marker = DetectMarker(region);
+
+        if (marker is not { } markerPoint)
+            return;
+
+        var aimX = markerPoint.X;
+        var aimY = markerPoint.Y + _config.AimAssist.ChestOffsetY;
+
+        var centerX = side / 2.0;
+        var centerY = side / 2.0;
+        var dx = aimX - centerX;
+        var dy = aimY - centerY;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+
+        if (dist > radius)
+            return;
+
+        MouseInput.MoveRelative((int)Math.Round(dx), (int)Math.Round(dy));
     }
 
     private void OnToggleEnabled(object? sender, EventArgs e) => ToggleEnabled();
