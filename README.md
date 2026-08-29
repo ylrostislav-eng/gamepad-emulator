@@ -134,6 +134,12 @@ playing against other people.
   "MaxLeadPx": 180,
   "TrackingHistoryMs": 400,
   "MinTrackingSamples": 2,
+  "UsePoseDetection": true,
+  "PoseModelPath": "Models/yolov8n-pose.onnx",
+  "PoseConfidenceThreshold": 0.4,
+  "PoseIouThreshold": 0.5,
+  "PoseKeypointConfThreshold": 0.3,
+  "PoseChestHipRatio": 0.35,
   "DebugCaptureEnabled": true,
   "DebugCaptureDir": "debug_captures"
 }
@@ -166,15 +172,52 @@ Tuning knobs for the snap-on-release mode:
   itself — increase the matching margin to exclude it, or narrow
   `ColorTolerance` and re-probe the marker's exact color with `F11`.
 
-For a permanent, distance-proof fix instead of a calibrated fixed pixel
-offset: since this is your own game with source access, the most robust
-option is to move the enemy marker's own anchor in the game code to the
-chest position in 3D world space (or add a second, differently-colored
-marker there) — then this tool can aim directly at it with `ChestOffsetY: 0`,
-correct at any distance, no screen-space guessing needed.
-
 If the game runs in exclusive fullscreen, screen capture may not work;
 switch it to windowed/borderless for testing.
+
+### Pose detection (aim at the person, not the marker)
+
+`UsePoseDetection: true` switches the aim point from the color-matched
+marker to a person detected directly from pixels (bundled pretrained
+YOLOv8-pose model, `Models/yolov8n-pose.onnx`, COCO keypoints) — the chest is
+estimated from the shoulder/hip keypoints instead of a fixed pixel offset
+below the marker. This sidesteps two problems the marker has: it's immune to
+other red HUD elements being mistaken for it (there's nothing color-specific
+to confuse it), and a detected silhouette's size actually does track
+distance, unlike the marker (a fixed-screen-size icon — see
+`UseMarkerHeightScaling` above). It reuses the exact same downstream pipeline
+as the marker path (crosshair math, snap-on-release, velocity/lead
+prediction) — only where the aim point comes from changes.
+
+- Runs on GPU via DirectML if available (NVIDIA/AMD/Intel, through the
+  normal graphics driver — no separate CUDA/cuDNN install needed), falling
+  back to CPU automatically otherwise.
+- If the model file is missing or fails to load (wrong path, no compatible
+  GPU/driver, corrupted file), the app automatically falls back to the
+  color-marker path and shows a tray balloon saying so — it never blocks the
+  tool from running.
+- Tuning: `PoseConfidenceThreshold` (raise if it's latching onto
+  background/props; lower if it's missing the actual enemy),
+  `PoseKeypointConfThreshold` (how confident a shoulder/hip reading must be
+  before it's trusted for the chest estimate — the fallback below this is a
+  fixed fraction of the detected person's bounding box), `PoseChestHipRatio`
+  (0 = right at the shoulders, 1 = right at the hips; where between them the
+  chest actually sits).
+- The pretrained model was trained on real photos of people, not this game's
+  specific art style, so accuracy on your character may vary — that's what
+  it's for testing. If it's unreliable, the fixed-offset marker path
+  (`UsePoseDetection: false`) remains fully intact as a fallback; a next step
+  from here would be fine-tuning the model on screenshots from your own game
+  for better accuracy, which needs a labeled dataset and is a bigger
+  undertaking than flipping this flag.
+
+For a permanent, distance-proof fix without any detection at all (screen
+color or pose model): since this is your own game with source access, the
+most robust option remains moving the enemy marker's own anchor in the game
+code to the chest position in 3D world space — then the color-marker path
+can aim directly at it with `ChestOffsetY: 0`, correct at any distance, no
+screen-space guessing needed. Not required if pose detection works well
+enough for your testing.
 
 ### Debug capture (screenshots + coordinate log for each shot)
 
@@ -190,17 +233,26 @@ When `DebugCaptureEnabled: true`, the app writes into `DebugCaptureDir`
   up), right before the real button-up (the shot) is let through.
 
 All three rows go into a single `log.csv` in that folder, with columns:
-`Timestamp, Label, Screenshot, CrosshairX, CrosshairY, MarkerFound, MarkerX,
-MarkerY, MarkerHeight, TargetX, TargetY, PredictedX, PredictedY,
-VelocityXPerSec, VelocityYPerSec` — `TargetX/Y` is the raw marker+chest-offset
-point, `PredictedX/Y` is the lead-predicted point actually used for the
-correction (only set on `release_before`, and only once there was enough
-tracking history — see `LeadTimeMs` above), `VelocityXPerSec/YPerSec` is the
-estimated marker speed behind that prediction, and `Screenshot` is the
-matching PNG filename in the same folder. Turn this off
-(`DebugCaptureEnabled: false`) once you're done tuning — it captures and
-saves a full-screen PNG on every shot, which costs disk space and a bit of
-CPU per shot.
+`Timestamp, Label, Screenshot, Mode, CrosshairX, CrosshairY, MarkerFound,
+MarkerX, MarkerY, MarkerHeight, PoseFound, PoseConfidence, PoseBoxWidth,
+PoseBoxHeight, TargetX, TargetY, PredictedX, PredictedY, VelocityXPerSec,
+VelocityYPerSec`:
+- `Mode` — `"Pose"` or `"ColorMarker"`, whichever actually ran for that row
+  (lets you tell at a glance whether pose detection was active or had fallen
+  back).
+- `MarkerX/Y/Height` are populated only in `ColorMarker` mode; `PoseFound`,
+  `PoseConfidence`, `PoseBoxWidth/Height` only in `Pose` mode.
+- `TargetX/Y` is the raw detected aim point (marker+chest-offset, or the
+  pose model's chest estimate); `PredictedX/Y` is the lead-predicted point
+  actually used for the correction (only set on `release_before`, and only
+  once there was enough tracking history — see `LeadTimeMs` above);
+  `VelocityXPerSec/YPerSec` is the estimated target speed behind that
+  prediction.
+- `Screenshot` is the matching PNG filename in the same folder.
+
+Turn this off (`DebugCaptureEnabled: false`) once you're done tuning — it
+captures and saves a full-screen PNG on every shot, which costs disk space
+and a bit of CPU per shot.
 
 ## Project layout
 
@@ -211,6 +263,9 @@ src/GamepadEmulator/
   Input/NativeMethods.cs   P/Invoke declarations for the low-level hooks
   Input/LowLevelHooks.cs   keyboard/mouse hook wrapper
   Virtual/VirtualXbox360Controller.cs  ViGEmBus wrapper
+  Vision/TargetDetector.cs  color-marker detection
+  Vision/PoseDetector.cs   ONNX pose-model detection
+  Models/yolov8n-pose.onnx  bundled pretrained pose model
 ```
 
 ## Uninstalling

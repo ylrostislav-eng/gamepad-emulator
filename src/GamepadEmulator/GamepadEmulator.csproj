@@ -15,10 +15,16 @@
 
   <ItemGroup>
     <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.256" />
+    <!-- DirectML backend: GPU inference on NVIDIA/AMD/Intel via the GPU driver already
+         installed for gaming, no separate CUDA/cuDNN toolkit install needed. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.20.1" />
   </ItemGroup>
 
   <ItemGroup>
     <None Update="mapping.default.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Models\yolov8n-pose.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

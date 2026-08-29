@@ -33,6 +33,7 @@ internal static class DebugCapture
                 null => "",
                 bool b => b ? "true" : "false",
                 double d => d.ToString("F1", System.Globalization.CultureInfo.InvariantCulture),
+                float f => f.ToString("F2", System.Globalization.CultureInfo.InvariantCulture),
                 _ => f.Value.ToString() ?? "",
             });
             writer.WriteLine($"{timestamp},{label},{imageFileName},{string.Join(",", values)}");

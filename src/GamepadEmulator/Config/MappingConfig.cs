@@ -162,6 +162,34 @@ public sealed class AimAssistConfig
     // there wasn't time to gather enough samples for a reliable velocity estimate.
     public int MinTrackingSamples { get; set; } = 2;
 
+    // When true, aim at a person detected directly from pixels (pretrained YOLOv8-pose
+    // model, chest estimated from shoulder/hip keypoints) instead of the color-matched
+    // marker. Immune to the marker's false positives (other red HUD elements) and to
+    // its lack of a real distance signal - a detected silhouette's size does track
+    // distance, unlike the fixed-screen-size marker icon. Falls back to the color
+    // marker automatically if the model file is missing or fails to load.
+    public bool UsePoseDetection { get; set; } = false;
+
+    // Path (relative to the exe) to the ONNX pose model.
+    public string PoseModelPath { get; set; } = "Models/yolov8n-pose.onnx";
+
+    // Minimum detection confidence (0-1) for a person to be considered at all.
+    public float PoseConfidenceThreshold { get; set; } = 0.4f;
+
+    // IoU threshold for non-max suppression - collapses duplicate/overlapping
+    // detections of the same person into one.
+    public float PoseIouThreshold { get; set; } = 0.5f;
+
+    // Minimum per-keypoint confidence (0-1) for a shoulder/hip keypoint to be trusted
+    // for the chest estimate; below this, a cruder box-based fallback is used instead
+    // (e.g. the person is partly occluded and the model isn't sure where a hip is).
+    public float PoseKeypointConfThreshold { get; set; } = 0.3f;
+
+    // How far down from the shoulder line toward the hip line the chest point sits,
+    // as a fraction of the shoulder-to-hip distance (0 = at the shoulders, 1 = at the
+    // hips). Tune from debug-capture screenshots the same way as ChestOffsetY.
+    public double PoseChestHipRatio { get; set; } = 0.35;
+
     // When true, saves a screenshot + logs crosshair/marker/target coordinates on
     // every LMB press, and again right after the release-snap correction moves the
     // mouse - so you can verify after the fact exactly what the tool saw and where

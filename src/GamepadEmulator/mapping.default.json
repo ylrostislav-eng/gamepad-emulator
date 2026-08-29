@@ -58,6 +58,13 @@
     "TrackingHistoryMs": 400,
     "MinTrackingSamples": 2,
 
+    "UsePoseDetection": true,
+    "PoseModelPath": "Models/yolov8n-pose.onnx",
+    "PoseConfidenceThreshold": 0.4,
+    "PoseIouThreshold": 0.5,
+    "PoseKeypointConfThreshold": 0.3,
+    "PoseChestHipRatio": 0.35,
+
     "DebugCaptureEnabled": true,
     "DebugCaptureDir": "debug_captures"
   }

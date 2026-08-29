@@ -45,6 +45,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private string _debugCaptureDir = "";
     private bool _isDrawing;
     private readonly List<(long TimestampMs, double X, double Y)> _trackingHistory = new();
+    private PoseDetector? _poseDetector;
+    private string _poseModelPath = "";
 
     private bool _enabled = true;
     private bool _aimAssistEnabled;
@@ -97,6 +99,14 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             ContextMenuStrip = menu,
         };
         _trayIcon.DoubleClick += (_, _) => OnToggleEnabled(_enabledMenuItem, EventArgs.Empty);
+
+        // LoadConfig() ran before _trayIcon existed, so a pose-model load failure on
+        // first startup couldn't show a balloon tip yet - surface it now instead.
+        if (_config.AimAssist.UsePoseDetection && _poseDetector == null)
+        {
+            _trayIcon.ShowBalloonTip(6000, "Gamepad Emulator",
+                "Pose model failed to load at startup - using color-marker detection instead.", ToolTipIcon.Warning);
+        }
     }
 
     private void LoadConfig()
@@ -123,6 +133,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             ? "debug_captures"
             : _config.AimAssist.DebugCaptureDir);
 
+        LoadPoseDetector(exeDir);
+
         _leftUp = ParseKey(_config.LeftStick.Up, Keys.W);
         _leftDown = ParseKey(_config.LeftStick.Down, Keys.S);
         _leftLeft = ParseKey(_config.LeftStick.Left, Keys.A);
@@ -147,6 +159,49 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         {
             if (Enum.TryParse<MouseButtons>(buttonKey, ignoreCase: true, out var mb))
                 _mouseButtonToButton[mb] = buttonName;
+        }
+    }
+
+    // (Re)loads the ONNX pose model when UsePoseDetection is on and the resolved path
+    // changed (including on the tray menu's "Reload mapping"). Loading it takes real
+    // time (model init + DirectML setup), so it only happens when actually needed, and
+    // any failure falls back to the color-marker path rather than crashing the app.
+    private void LoadPoseDetector(string exeDir)
+    {
+        if (!_config.AimAssist.UsePoseDetection)
+        {
+            _poseDetector?.Dispose();
+            _poseDetector = null;
+            _poseModelPath = "";
+            return;
+        }
+
+        var poseModelPath = Path.Combine(exeDir, string.IsNullOrWhiteSpace(_config.AimAssist.PoseModelPath)
+            ? "Models/yolov8n-pose.onnx"
+            : _config.AimAssist.PoseModelPath);
+
+        if (_poseDetector != null && _poseModelPath == poseModelPath)
+            return;
+
+        _poseDetector?.Dispose();
+        _poseDetector = null;
+        _poseModelPath = poseModelPath;
+
+        if (!File.Exists(poseModelPath))
+        {
+            _trayIcon?.ShowBalloonTip(6000, "Gamepad Emulator",
+                $"Pose model not found: {poseModelPath}. Falling back to color-marker detection.", ToolTipIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            _poseDetector = new PoseDetector(poseModelPath);
+        }
+        catch (Exception ex)
+        {
+            _trayIcon?.ShowBalloonTip(6000, "Gamepad Emulator",
+                $"Failed to load pose model: {ex.Message}. Falling back to color-marker detection.", ToolTipIcon.Error);
         }
     }
 
@@ -373,12 +428,6 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         return new Rectangle(screen.Left, screen.Top + ignoreTop, screen.Width, height);
     }
 
-    private TargetMatch? DetectMarker(Rectangle region)
-    {
-        using var capture = ScreenCapture.CaptureRegion(region);
-        return DetectMarkerFromBitmap(capture);
-    }
-
     private TargetMatch? DetectMarkerFromBitmap(Bitmap bitmap)
     {
         var targetColor = System.Drawing.Color.FromArgb(
@@ -387,17 +436,42 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             bitmap, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
     }
 
+    // Detects the final aim point using whichever detection mode is configured: the
+    // pretrained pose model if UsePoseDetection is on and it loaded successfully
+    // (already gives a chest point directly, no further offset needed), otherwise the
+    // color-marker path (marker position + ComputeChestOffsetY). Returns null if
+    // nothing was detected. Also returns the underlying marker/pose result so callers
+    // can log detailed diagnostics.
+    private (Point Point, TargetMatch? Marker, PoseMatch? Pose)? DetectAim(Bitmap bitmap)
+    {
+        if (_config.AimAssist.UsePoseDetection && _poseDetector != null)
+        {
+            var pose = _poseDetector.DetectNearestChest(bitmap,
+                _config.AimAssist.PoseConfidenceThreshold, _config.AimAssist.PoseIouThreshold,
+                _config.AimAssist.PoseKeypointConfThreshold, _config.AimAssist.PoseChestHipRatio);
+            return pose is { } p ? (p.ChestPoint, null, p) : null;
+        }
+
+        var marker = DetectMarkerFromBitmap(bitmap);
+        if (marker is not { } m)
+            return null;
+
+        var point = new Point(m.Point.X, (int)Math.Round(m.Point.Y + ComputeChestOffsetY(m)));
+        return (point, marker, null);
+    }
+
     // Captures the current screen fresh, saves it, and logs crosshair/marker/target
     // coordinates alongside it. Used for the "press" and "release_after" debug events.
     private void CaptureDebugSnapshot(string label)
     {
         var region = GetAimRegion(out var crosshairX, out var crosshairY);
         using var screenshot = ScreenCapture.CaptureRegion(region);
-        var marker = DetectMarkerFromBitmap(screenshot);
-        SaveDebugSnapshot(label, screenshot, crosshairX, crosshairY, marker);
+        var detected = DetectAim(screenshot);
+        SaveDebugSnapshot(label, screenshot, crosshairX, crosshairY, detected?.Marker, detected?.Pose);
     }
 
-    private void SaveDebugSnapshot(string label, Bitmap screenshot, int crosshairX, int crosshairY, TargetMatch? marker,
+    private void SaveDebugSnapshot(string label, Bitmap screenshot, int crosshairX, int crosshairY,
+        TargetMatch? marker, PoseMatch? pose,
         (double X, double Y)? predicted = null, (double VxPerMs, double VyPerMs)? velocity = null)
     {
         double? targetX = null, targetY = null;
@@ -406,22 +480,32 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             targetX = match.Point.X;
             targetY = match.Point.Y + ComputeChestOffsetY(match);
         }
+        else if (pose is { } p)
+        {
+            targetX = p.ChestPoint.X;
+            targetY = p.ChestPoint.Y;
+        }
 
         double? velocityXPerSec = velocity?.VxPerMs * 1000;
         double? velocityYPerSec = velocity?.VyPerMs * 1000;
 
         DebugCapture.Save(_debugCaptureDir, label, screenshot, new (string, object?)[]
         {
+            ("Mode", _config.AimAssist.UsePoseDetection && _poseDetector != null ? "Pose" : "ColorMarker"),
             ("CrosshairX", crosshairX),
             ("CrosshairY", crosshairY),
             ("MarkerFound", marker != null),
             ("MarkerX", marker?.Point.X),
             ("MarkerY", marker?.Point.Y),
             ("MarkerHeight", marker?.Height),
+            ("PoseFound", pose != null),
+            ("PoseConfidence", pose?.Confidence),
+            ("PoseBoxWidth", pose?.Box.Width),
+            ("PoseBoxHeight", pose?.Box.Height),
             ("TargetX", targetX),
             ("TargetY", targetY),
             // The lead-predicted aim point actually used for the correction, and the
-            // estimated marker velocity (px/sec) behind it - null unless there was
+            // estimated target velocity (px/sec) behind it - null unless there was
             // enough tracking history during the draw to predict from.
             ("PredictedX", predicted?.X),
             ("PredictedY", predicted?.Y),
@@ -462,17 +546,18 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             return;
 
         var region = GetAimRegion(out var crosshairX, out var crosshairY);
-        var marker = DetectMarker(region);
+        using var capture = ScreenCapture.CaptureRegion(region);
+        var detected = DetectAim(capture);
 
-        if (marker is not { } match)
+        if (detected is not { } result)
         {
             _smoothedAimX = null;
             _smoothedAimY = null;
             return;
         }
 
-        var rawAimX = (double)match.Point.X;
-        var rawAimY = match.Point.Y + ComputeChestOffsetY(match);
+        var rawAimX = (double)result.Point.X;
+        var rawAimY = (double)result.Point.Y;
 
         var smoothing = Math.Clamp(_config.AimAssist.Smoothing, 0.0, 0.98);
         _smoothedAimX = _smoothedAimX is { } sx ? sx * smoothing + rawAimX * (1 - smoothing) : rawAimX;
@@ -503,20 +588,18 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         MouseInput.MoveRelative(moveX, moveY);
     }
 
-    // Records the marker's current position (without moving the mouse) while the bow
-    // is drawn, building a short history used to estimate its on-screen velocity.
+    // Records the current aim point (without moving the mouse) while the bow is
+    // drawn, building a short history used to estimate its on-screen velocity.
     private void RecordTrackingSample()
     {
         var region = GetAimRegion(out _, out _);
-        var marker = DetectMarker(region);
-        if (marker is not { } match)
+        using var capture = ScreenCapture.CaptureRegion(region);
+        var detected = DetectAim(capture);
+        if (detected is not { } result)
             return;
 
-        var x = (double)match.Point.X;
-        var y = match.Point.Y + ComputeChestOffsetY(match);
         var now = Environment.TickCount64;
-
-        _trackingHistory.Add((now, x, y));
+        _trackingHistory.Add((now, result.Point.X, result.Point.Y));
 
         var cutoff = now - Math.Max(1, _config.AimAssist.TrackingHistoryMs);
         _trackingHistory.RemoveAll(s => s.TimestampMs < cutoff);
@@ -555,17 +638,17 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     {
         var region = GetAimRegion(out var crosshairX, out var crosshairY);
         using var screenshot = ScreenCapture.CaptureRegion(region);
-        var marker = DetectMarkerFromBitmap(screenshot);
+        var detected = DetectAim(screenshot);
 
-        if (marker is not { } match)
+        if (detected is not { } result)
         {
             if (_config.AimAssist.DebugCaptureEnabled)
-                SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, null);
+                SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, null, null);
             return;
         }
 
-        var rawX = (double)match.Point.X;
-        var rawY = match.Point.Y + ComputeChestOffsetY(match);
+        var rawX = (double)result.Point.X;
+        var rawY = (double)result.Point.Y;
         var now = Environment.TickCount64;
 
         var (aimX, aimY, vx, vy) = PredictLeadPosition(rawX, rawY, now);
@@ -575,7 +658,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             // Snapshot of the screen, the raw detection, and the lead-predicted target
             // the instant before the mouse is moved, i.e. what the correction is about
             // to do and why (velocity-based prediction, if any was applied).
-            SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, marker, (aimX, aimY), (vx, vy));
+            SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY,
+                result.Marker, result.Pose, (aimX, aimY), (vx, vy));
         }
 
         var dx = aimX - crosshairX;
@@ -613,6 +697,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _hooks.Dispose();
         _controller.Dispose();
         _overlay.Dispose();
+        _poseDetector?.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();
