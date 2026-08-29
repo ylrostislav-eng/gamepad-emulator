@@ -44,10 +44,12 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private MouseButtons? _hardLockButton;
     private string _debugCaptureDir = "";
 
-    // Runaway-lock watchdog state - both only ever touched from the UI thread
+    // Runaway-lock watchdog state - all only ever touched from the UI thread
     // (OnMouseButton and OnPullTick both run there), so no synchronization needed.
     private long _lockEngagedAtMs;
     private bool _lockWatchdogTripped;
+    private double? _lockLastDist;
+    private int _lockStuckTicks;
 
     // Set from the input hook thread (button press/release), read from the background
     // detection loop thread - both plain field accesses, so this needs to be volatile
@@ -399,6 +401,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             {
                 _lockEngagedAtMs = Environment.TickCount64;
                 _lockWatchdogTripped = false;
+                _lockLastDist = null;
+                _lockStuckTicks = 0;
             }
         }
 
@@ -471,10 +475,37 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         var dy = point.Y - crosshairY;
         var dist = Math.Sqrt(dx * dx + dy * dy);
 
-        // Safety valve: if it's still nowhere close after a while, this is almost
-        // certainly a false detection that isn't part of the actual game world (so
-        // turning the camera toward it never reduces the error) - disengage instead of
-        // spinning indefinitely. Release and re-press the hard-lock button to retry.
+        if (dist < Math.Max(0, _config.AimAssist.LockDeadZonePx))
+        {
+            // Genuinely converged - not "stuck", reset so a later drift doesn't trip
+            // the detector using a stale reference distance from before it settled.
+            _lockStuckTicks = 0;
+            _lockLastDist = dist;
+            return;
+        }
+
+        // Fast runaway detector: a real target's on-screen distance drops tick over
+        // tick as the camera turns toward it. If it isn't dropping, this is almost
+        // certainly a false detection that isn't actually part of the game world (nothing
+        // to turn "toward") - disengage within a fraction of a second instead of
+        // spinning/diving indefinitely. Release and re-press the hard-lock button to retry.
+        var tolerance = Math.Max(0, _config.AimAssist.LockProgressTolerancePx);
+        if (_lockLastDist is { } lastDist && dist >= lastDist - tolerance)
+            _lockStuckTicks++;
+        else
+            _lockStuckTicks = 0;
+        _lockLastDist = dist;
+
+        if (_lockStuckTicks >= Math.Max(1, _config.AimAssist.LockStuckTicks))
+        {
+            _lockWatchdogTripped = true;
+            _trayIcon.ShowBalloonTip(4000, "Gamepad Emulator",
+                "Aim-lock disengaged: target distance stopped shrinking (likely a false detection) - release and re-press to retry.",
+                ToolTipIcon.Warning);
+            return;
+        }
+
+        // Slower backstop in case the check above somehow doesn't catch it.
         var watchdogRadius = Math.Max(1, _config.AimAssist.LockWatchdogRadiusPx);
         var watchdogMs = Math.Max(1, _config.AimAssist.LockWatchdogMs);
         if (dist > watchdogRadius && Environment.TickCount64 - _lockEngagedAtMs > watchdogMs)
@@ -485,9 +516,6 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
                 ToolTipIcon.Warning);
             return;
         }
-
-        if (dist < Math.Max(0, _config.AimAssist.LockDeadZonePx))
-            return;
 
         var gain = Math.Clamp(_config.AimAssist.LockGain, 0.0, 1.0);
         var maxStep = Math.Max(1, _config.AimAssist.MaxPullStepPx);

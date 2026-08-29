@@ -122,13 +122,21 @@ public sealed class AimAssistConfig
     // becomes jerky and button suppression/timing becomes unreliable.
     public int DetectionIntervalMs { get; set; } = 33;
 
-    // Safety valve: if the aim is still farther than LockWatchdogRadiusPx from the
-    // target after LockWatchdogMs of continuous pulling, the lock disengages for the
-    // rest of the hold (release and re-press to retry) instead of pulling forever.
-    // Guards against a false detection that never gets any closer as the camera turns
-    // toward it (e.g. something screen-anchored, or the player's own view-model arm
-    // before PoseMaxBoxHeightFraction below existed) turning into a runaway spin.
-    public int LockWatchdogMs { get; set; } = 800;
+    // Fast runaway detector: if the remaining distance to the target hasn't shrunk by
+    // at least LockProgressTolerancePx for this many consecutive pull ticks, the lock
+    // disengages for the rest of the hold immediately (release and re-press to retry).
+    // A real target's on-screen distance drops tick over tick as the camera turns
+    // toward it; a false detection that isn't actually part of the game world (e.g.
+    // something screen-anchored, or the player's own view-model arm before
+    // PoseMaxBoxHeightFraction below existed) never gets any closer, so this catches a
+    // runaway spin/dive within a fraction of a second instead of letting it run.
+    public int LockStuckTicks { get; set; } = 6;
+    public int LockProgressTolerancePx { get; set; } = 3;
+
+    // Slower backstop, in case the stuck-ticks check above somehow doesn't catch it:
+    // if the aim is still farther than LockWatchdogRadiusPx from the target after
+    // LockWatchdogMs of continuous pulling, disengage the lock regardless.
+    public int LockWatchdogMs { get; set; } = 500;
     public int LockWatchdogRadiusPx { get; set; } = 500;
 
     // When true, aim at a person detected directly from pixels (pretrained YOLOv8-pose

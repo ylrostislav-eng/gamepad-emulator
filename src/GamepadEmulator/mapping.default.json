@@ -49,7 +49,9 @@
     "MaxPullStepPx": 70,
     "PullIntervalMs": 16,
     "DetectionIntervalMs": 33,
-    "LockWatchdogMs": 800,
+    "LockStuckTicks": 6,
+    "LockProgressTolerancePx": 3,
+    "LockWatchdogMs": 500,
     "LockWatchdogRadiusPx": 500,
 
     "UsePoseDetection": true,

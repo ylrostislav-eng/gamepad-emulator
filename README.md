@@ -137,7 +137,9 @@ playing against other people.
   "MaxPullStepPx": 70,
   "PullIntervalMs": 16,
   "DetectionIntervalMs": 33,
-  "LockWatchdogMs": 800,
+  "LockStuckTicks": 6,
+  "LockProgressTolerancePx": 3,
+  "LockWatchdogMs": 500,
   "LockWatchdogRadiusPx": 500,
   "UsePoseDetection": true,
   "PoseModelPath": "Models/yolov8n-pose.onnx",
@@ -179,16 +181,20 @@ Tuning knobs for the hard-lock:
   camera is turning, that's almost always a screen-anchored HUD element being
   mistaken for the marker - increase the matching margin to exclude it, or
   narrow `ColorTolerance` and re-probe the marker's exact color with `F11`.
-- `LockWatchdogMs`/`LockWatchdogRadiusPx` — a safety valve: if the aim is
-  still farther than `LockWatchdogRadiusPx` from the target after
-  `LockWatchdogMs` of continuous pulling, the lock disengages for the rest of
-  the hold (release and re-press to retry) instead of pulling forever. This
-  is what stops a runaway spinning/diving camera if the detector ever locks
-  onto something that isn't actually part of the game world (a screen-anchored
-  HUD element, or the player's own view-model before `PoseMaxBoxHeightFraction`
-  below) - turning toward such a thing never reduces the on-screen distance
-  to it, so without this it would just keep pulling in the same direction
-  indefinitely.
+- `LockStuckTicks`/`LockProgressTolerancePx` — the primary runaway guard: if
+  the remaining distance to the target hasn't shrunk by at least
+  `LockProgressTolerancePx` for `LockStuckTicks` pull ticks in a row (about
+  100ms at the defaults), the lock disengages immediately for the rest of the
+  hold (release and re-press to retry). A real target's distance drops tick
+  over tick as the camera turns toward it; a false detection that isn't
+  actually part of the game world (a screen-anchored HUD element, or the
+  player's own view-model before `PoseMaxBoxHeightFraction` below) never gets
+  any closer, so this catches a runaway spin/dive within a fraction of a
+  second - fast enough to stop it well before it becomes disorienting.
+- `LockWatchdogMs`/`LockWatchdogRadiusPx` — a slower backstop behind the
+  above, in case that check somehow doesn't trip: if the aim is still farther
+  than `LockWatchdogRadiusPx` from the target after `LockWatchdogMs` of
+  continuous pulling, disengage regardless.
 
 If the game runs in exclusive fullscreen, screen capture may not work;
 switch it to windowed/borderless for testing.
