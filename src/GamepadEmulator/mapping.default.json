@@ -17,22 +17,20 @@
   },
 
   "KeyToButton": {
-    "Space": "A",
-    "ShiftKey": "B",
-    "E": "X",
-    "Q": "Y",
-    "R": "RightShoulder",
-    "Tab": "Back",
-    "Escape": "Start",
-    "Up": "Up",
-    "Down": "Down",
-    "Left": "Left",
-    "Right": "Right"
+    "ShiftKey": "A",
+    "Space": "B",
+    "F": "X",
+    "R": "Left"
+  },
+
+  "KeyToButtonCombo": {
+    "D1": ["LeftTrigger", "Y"],
+    "D2": ["LeftTrigger", "X"],
+    "D3": ["LeftTrigger", "A"]
   },
 
   "MouseButtonToButton": {
-    "Left": "RightTrigger",
-    "Right": "LeftTrigger",
-    "Middle": "RightThumb"
+    "Left": "RightShoulder",
+    "Right": "RightTrigger"
   }
 }

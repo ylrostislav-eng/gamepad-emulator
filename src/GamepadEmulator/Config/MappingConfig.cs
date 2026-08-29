@@ -9,6 +9,7 @@ public sealed class MappingConfig
     public RightStickConfig RightStick { get; set; } = new();
 
     public Dictionary<string, string> KeyToButton { get; set; } = new();
+    public Dictionary<string, string[]> KeyToButtonCombo { get; set; } = new();
     public Dictionary<string, string> MouseButtonToButton { get; set; } = new();
 }
 

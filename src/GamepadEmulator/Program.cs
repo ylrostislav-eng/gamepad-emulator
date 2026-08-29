@@ -29,6 +29,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private MappingConfig _config = new();
     private Keys _toggleKey = Keys.F9;
     private readonly Dictionary<Keys, string> _keyToButton = new();
+    private readonly Dictionary<Keys, string[]> _keyToButtonCombo = new();
     private readonly Dictionary<MouseButtons, string> _mouseButtonToButton = new();
     private Keys _leftUp, _leftDown, _leftLeft, _leftRight;
 
@@ -100,6 +101,13 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
                 _keyToButton[key] = buttonName;
         }
 
+        _keyToButtonCombo.Clear();
+        foreach (var (keyName, buttonNames) in _config.KeyToButtonCombo)
+        {
+            if (Enum.TryParse<Keys>(keyName, ignoreCase: true, out var key))
+                _keyToButtonCombo[key] = buttonNames;
+        }
+
         _mouseButtonToButton.Clear();
         foreach (var (buttonKey, buttonName) in _config.MouseButtonToButton)
         {
@@ -120,7 +128,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             return false;
 
         return key == _leftUp || key == _leftDown || key == _leftLeft || key == _leftRight
-               || _keyToButton.ContainsKey(key);
+               || _keyToButton.ContainsKey(key) || _keyToButtonCombo.ContainsKey(key);
     }
 
     private bool ShouldSuppressMouseButton(MouseButtons button)
@@ -148,6 +156,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         else if (key == _leftRight) _leftRightHeld = true;
         else if (_keyToButton.TryGetValue(key, out var buttonName))
             _controller.SetButton(buttonName, true);
+        else if (_keyToButtonCombo.TryGetValue(key, out var buttonNames))
+            foreach (var name in buttonNames)
+                _controller.SetButton(name, true);
     }
 
     private void OnKeyUp(Keys key)
@@ -158,6 +169,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         else if (key == _leftRight) _leftRightHeld = false;
         else if (_keyToButton.TryGetValue(key, out var buttonName))
             _controller.SetButton(buttonName, false);
+        else if (_keyToButtonCombo.TryGetValue(key, out var buttonNames))
+            foreach (var name in buttonNames)
+                _controller.SetButton(name, false);
     }
 
     private void OnMouseButton(MouseButtons button, bool pressed)
