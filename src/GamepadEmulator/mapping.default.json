@@ -1,6 +1,7 @@
 {
   "BlockPhysicalInputForMappedKeys": true,
   "ToggleHotkey": "F9",
+  "TargetProcessName": "",
 
   "LeftStick": {
     "Up": "W",

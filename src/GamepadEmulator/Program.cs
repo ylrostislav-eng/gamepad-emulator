@@ -124,7 +124,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (key == _toggleKey)
             return false;
 
-        if (!_enabled || !_config.BlockPhysicalInputForMappedKeys)
+        if (!IsActiveNow() || !_config.BlockPhysicalInputForMappedKeys)
             return false;
 
         return key == _leftUp || key == _leftDown || key == _leftLeft || key == _leftRight
@@ -133,10 +133,37 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private bool ShouldSuppressMouseButton(MouseButtons button)
     {
-        if (!_enabled || !_config.BlockPhysicalInputForMappedKeys)
+        if (!IsActiveNow() || !_config.BlockPhysicalInputForMappedKeys)
             return false;
 
         return _mouseButtonToButton.ContainsKey(button);
+    }
+
+    private bool IsActiveNow()
+    {
+        if (!_enabled)
+            return false;
+
+        if (string.IsNullOrEmpty(_config.TargetProcessName))
+            return true;
+
+        var hWnd = NativeMethods.GetForegroundWindow();
+        if (hWnd == IntPtr.Zero)
+            return false;
+
+        NativeMethods.GetWindowThreadProcessId(hWnd, out var pid);
+        if (pid == 0)
+            return false;
+
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
+            return string.Equals(process.ProcessName, _config.TargetProcessName, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     private void OnKeyDown(Keys key)
@@ -147,7 +174,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             return;
         }
 
-        if (!_enabled)
+        if (!IsActiveNow())
             return;
 
         if (key == _leftUp) _leftUpHeld = true;
@@ -176,7 +203,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnMouseButton(MouseButtons button, bool pressed)
     {
-        if (!_enabled)
+        if (pressed && !IsActiveNow())
             return;
 
         if (_mouseButtonToButton.TryGetValue(button, out var buttonName))
@@ -185,7 +212,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnMouseMoveDelta(int dx, int dy)
     {
-        if (!_enabled)
+        if (!IsActiveNow())
             return;
 
         var sensitivity = _config.RightStick.Sensitivity * 0.02;

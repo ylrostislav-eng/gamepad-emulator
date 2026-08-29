@@ -5,6 +5,9 @@ public sealed class MappingConfig
     public bool BlockPhysicalInputForMappedKeys { get; set; } = true;
     public string ToggleHotkey { get; set; } = "F9";
 
+    // Process name (without .exe) to restrict the remap to; empty = active system-wide.
+    public string TargetProcessName { get; set; } = "";
+
     public LeftStickConfig LeftStick { get; set; } = new();
     public RightStickConfig RightStick { get; set; } = new();
 
