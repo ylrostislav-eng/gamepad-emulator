@@ -53,6 +53,11 @@
     "SnapGain": 0.5,
     "SnapReleaseDelayMs": 90,
 
+    "LeadTimeMs": 150,
+    "MaxLeadPx": 180,
+    "TrackingHistoryMs": 400,
+    "MinTrackingSamples": 2,
+
     "DebugCaptureEnabled": true,
     "DebugCaptureDir": "debug_captures"
   }

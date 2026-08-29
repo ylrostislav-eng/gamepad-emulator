@@ -43,6 +43,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private MouseButtons? _snapOnReleaseButton;
     private MouseButtons? _snapReleasePending;
     private string _debugCaptureDir = "";
+    private bool _isDrawing;
+    private readonly List<(long TimestampMs, double X, double Y)> _trackingHistory = new();
 
     private bool _enabled = true;
     private bool _aimAssistEnabled;
@@ -257,13 +259,21 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnMouseButton(MouseButtons button, bool pressed)
     {
-        if (pressed && button == _snapOnReleaseButton && _config.AimAssist.DebugCaptureEnabled
+        if (pressed && button == _snapOnReleaseButton
             && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
         {
-            // Snapshot of what the tool sees the instant the bow-draw button is pressed,
-            // before anything has moved - lets you compare against the "after release"
-            // snapshot below to see exactly what the correction did.
-            CaptureDebugSnapshot("press");
+            // Start tracking the marker's position while the bow is drawn, so a
+            // velocity can be estimated for lead prediction at release.
+            _trackingHistory.Clear();
+            _isDrawing = true;
+
+            if (_config.AimAssist.DebugCaptureEnabled)
+            {
+                // Snapshot of what the tool sees the instant the bow-draw button is pressed,
+                // before anything has moved - lets you compare against the "after release"
+                // snapshot below to see exactly what the correction did.
+                CaptureDebugSnapshot("press");
+            }
         }
 
         if (!pressed && _snapReleasePending == null && _snapOnReleaseButton == button
@@ -273,6 +283,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             // correction now, then hold the actual release until the game has had time
             // to visually catch up to it, so a big correction doesn't fire the shot
             // before the camera finishes turning.
+            _isDrawing = false;
             _snapReleasePending = button;
             PerformSnapCorrection();
             _snapReleaseTimer.Interval = Math.Max(1, _config.AimAssist.SnapReleaseDelayMs);
@@ -386,7 +397,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         SaveDebugSnapshot(label, screenshot, crosshairX, crosshairY, marker);
     }
 
-    private void SaveDebugSnapshot(string label, Bitmap screenshot, int crosshairX, int crosshairY, TargetMatch? marker)
+    private void SaveDebugSnapshot(string label, Bitmap screenshot, int crosshairX, int crosshairY, TargetMatch? marker,
+        (double X, double Y)? predicted = null, (double VxPerMs, double VyPerMs)? velocity = null)
     {
         double? targetX = null, targetY = null;
         if (marker is { } match)
@@ -394,6 +406,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             targetX = match.Point.X;
             targetY = match.Point.Y + ComputeChestOffsetY(match);
         }
+
+        double? velocityXPerSec = velocity?.VxPerMs * 1000;
+        double? velocityYPerSec = velocity?.VyPerMs * 1000;
 
         DebugCapture.Save(_debugCaptureDir, label, screenshot, new (string, object?)[]
         {
@@ -405,6 +420,13 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             ("MarkerHeight", marker?.Height),
             ("TargetX", targetX),
             ("TargetY", targetY),
+            // The lead-predicted aim point actually used for the correction, and the
+            // estimated marker velocity (px/sec) behind it - null unless there was
+            // enough tracking history during the draw to predict from.
+            ("PredictedX", predicted?.X),
+            ("PredictedY", predicted?.Y),
+            ("VelocityXPerSec", velocityXPerSec),
+            ("VelocityYPerSec", velocityYPerSec),
         });
     }
 
@@ -424,10 +446,19 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnAimAssistTick()
     {
-        // Continuous pull is unused (and skipped entirely, to save CPU) once
-        // snap-on-release is configured - PerformSnapCorrection does its own fresh
-        // capture at the moment that matters instead.
-        if (_snapOnReleaseButton != null || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
+        if (_snapOnReleaseButton != null)
+        {
+            // Continuous pull is unused once snap-on-release is configured -
+            // PerformSnapCorrection does its own fresh capture at the moment that
+            // matters instead. But while the bow is drawn, sample the marker's
+            // position (without moving the mouse) so a velocity can be estimated
+            // for lead prediction against a moving target at release.
+            if (_isDrawing && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
+                RecordTrackingSample();
+            return;
+        }
+
+        if (!_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
             return;
 
         var region = GetAimRegion(out var crosshairX, out var crosshairY);
@@ -472,24 +503,80 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         MouseInput.MoveRelative(moveX, moveY);
     }
 
+    // Records the marker's current position (without moving the mouse) while the bow
+    // is drawn, building a short history used to estimate its on-screen velocity.
+    private void RecordTrackingSample()
+    {
+        var region = GetAimRegion(out _, out _);
+        var marker = DetectMarker(region);
+        if (marker is not { } match)
+            return;
+
+        var x = (double)match.Point.X;
+        var y = match.Point.Y + ComputeChestOffsetY(match);
+        var now = Environment.TickCount64;
+
+        _trackingHistory.Add((now, x, y));
+
+        var cutoff = now - Math.Max(1, _config.AimAssist.TrackingHistoryMs);
+        _trackingHistory.RemoveAll(s => s.TimestampMs < cutoff);
+    }
+
+    // Extrapolates from the oldest retained tracking sample to "now" to estimate
+    // velocity (px/ms), then projects LeadTimeMs further into the future - so the
+    // correction aims where a moving target will be by the time the shot actually
+    // registers, not where it was at the moment of detection. Falls back to the raw
+    // (un-extrapolated) position when there isn't enough tracking history yet, e.g.
+    // a very quick draw-and-release, or the target isn't actually moving.
+    private (double X, double Y, double VxPerMs, double VyPerMs) PredictLeadPosition(double rawX, double rawY, long now)
+    {
+        var leadMs = Math.Max(0, _config.AimAssist.LeadTimeMs);
+        var minSamples = Math.Max(2, _config.AimAssist.MinTrackingSamples);
+
+        if (leadMs == 0 || _trackingHistory.Count < minSamples)
+            return (rawX, rawY, 0, 0);
+
+        var oldest = _trackingHistory[0];
+        var dtMs = now - oldest.TimestampMs;
+        if (dtMs < 16)
+            return (rawX, rawY, 0, 0);
+
+        var vx = (rawX - oldest.X) / dtMs;
+        var vy = (rawY - oldest.Y) / dtMs;
+
+        var maxLead = Math.Max(0, _config.AimAssist.MaxLeadPx);
+        var leadX = Math.Clamp(vx * leadMs, -maxLead, maxLead);
+        var leadY = Math.Clamp(vy * leadMs, -maxLead, maxLead);
+
+        return (rawX + leadX, rawY + leadY, vx, vy);
+    }
+
     private void PerformSnapCorrection()
     {
         var region = GetAimRegion(out var crosshairX, out var crosshairY);
         using var screenshot = ScreenCapture.CaptureRegion(region);
         var marker = DetectMarkerFromBitmap(screenshot);
 
-        if (_config.AimAssist.DebugCaptureEnabled)
+        if (marker is not { } match)
         {
-            // Snapshot of the screen and the computed target the instant before the
-            // mouse is moved, i.e. what the correction is about to do.
-            SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, marker);
+            if (_config.AimAssist.DebugCaptureEnabled)
+                SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, null);
+            return;
         }
 
-        if (marker is not { } match)
-            return;
+        var rawX = (double)match.Point.X;
+        var rawY = match.Point.Y + ComputeChestOffsetY(match);
+        var now = Environment.TickCount64;
 
-        var aimX = match.Point.X;
-        var aimY = match.Point.Y + ComputeChestOffsetY(match);
+        var (aimX, aimY, vx, vy) = PredictLeadPosition(rawX, rawY, now);
+
+        if (_config.AimAssist.DebugCaptureEnabled)
+        {
+            // Snapshot of the screen, the raw detection, and the lead-predicted target
+            // the instant before the mouse is moved, i.e. what the correction is about
+            // to do and why (velocity-based prediction, if any was applied).
+            SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, marker, (aimX, aimY), (vx, vy));
+        }
 
         var dx = aimX - crosshairX;
         var dy = aimY - crosshairY;
@@ -512,6 +599,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             _rightStickX = _rightStickY = 0;
             _controller.SetLeftStick(0, 0);
             _controller.SetRightStick(0, 0);
+            _isDrawing = false;
+            _trackingHistory.Clear();
             CompleteSnapRelease();
         }
     }

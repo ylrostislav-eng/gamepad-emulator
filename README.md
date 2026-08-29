@@ -103,6 +103,13 @@ playing against other people.
   differently-implemented marker does scale with distance.
 - `MinChestOffsetY`/`MaxChestOffsetY` clamp the final offset either way, as a
   safety net against one bad reading producing a wild correction.
+- While the bow is drawn (button held), the marker's position is sampled
+  every tick (without moving the mouse) to estimate its on-screen velocity.
+  At release, the aim point is extrapolated `LeadTimeMs` further into the
+  future instead of using the marker's last-seen (by then stale) position —
+  so a moving/fighting target gets led, not shot at where it used to be.
+  Only kicks in once at least `MinTrackingSamples` were gathered during the
+  draw; a very quick draw-and-release falls back to the raw position.
 - Toggled independently of the remap with `F10`; `F11` reads the color under
   the mouse cursor into a tray balloon tip, so you can hover the enemy
   marker in-game and copy the exact `ColorR/G/B` into `mapping.json`.
@@ -123,6 +130,10 @@ playing against other people.
   "SnapOnReleaseButton": "Left",
   "SnapGain": 0.5,
   "SnapReleaseDelayMs": 90,
+  "LeadTimeMs": 150,
+  "MaxLeadPx": 180,
+  "TrackingHistoryMs": 400,
+  "MinTrackingSamples": 2,
   "DebugCaptureEnabled": true,
   "DebugCaptureDir": "debug_captures"
 }
@@ -139,6 +150,15 @@ Tuning knobs for the snap-on-release mode:
 - `SnapReleaseDelayMs` — how long (ms) the real button release is held back
   after the jump, giving the game's camera time to finish turning before the
   shot registers. Raise it if big corrections still land short.
+- `LeadTimeMs` — how far ahead (ms) a moving target is led, roughly the total
+  latency from detection to the shot actually registering (capture/detect
+  overhead + `SnapReleaseDelayMs`). If shots against a moving/fighting enemy
+  consistently land behind it, raise this; if they now land ahead of it
+  (over-leading), lower it. `0` disables prediction (shoots at the raw
+  last-seen position, like before).
+- `MaxLeadPx` — hard cap on how far prediction may shift the aim, protecting
+  against a noisy velocity estimate (e.g. the marker briefly jumping to a
+  different blob) producing a wild extrapolated aim.
 - `IgnoreTopPx`/`IgnoreBottomPx` — if a shot's debug log shows `MarkerFound`
   at a position that doesn't move between `press`/`release_before`/
   `release_after` even though the camera turned, that's almost always a
@@ -171,9 +191,13 @@ When `DebugCaptureEnabled: true`, the app writes into `DebugCaptureDir`
 
 All three rows go into a single `log.csv` in that folder, with columns:
 `Timestamp, Label, Screenshot, CrosshairX, CrosshairY, MarkerFound, MarkerX,
-MarkerY, MarkerHeight, TargetX, TargetY` — `TargetX/Y` is the computed
-chest-aim point (marker position + the auto-calculated chest offset), and
-`Screenshot` is the matching PNG filename in the same folder. Turn this off
+MarkerY, MarkerHeight, TargetX, TargetY, PredictedX, PredictedY,
+VelocityXPerSec, VelocityYPerSec` — `TargetX/Y` is the raw marker+chest-offset
+point, `PredictedX/Y` is the lead-predicted point actually used for the
+correction (only set on `release_before`, and only once there was enough
+tracking history — see `LeadTimeMs` above), `VelocityXPerSec/YPerSec` is the
+estimated marker speed behind that prediction, and `Screenshot` is the
+matching PNG filename in the same folder. Turn this off
 (`DebugCaptureEnabled: false`) once you're done tuning — it captures and
 saves a full-screen PNG on every shot, which costs disk space and a bit of
 CPU per shot.

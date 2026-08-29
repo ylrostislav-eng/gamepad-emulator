@@ -140,6 +140,28 @@ public sealed class AimAssistConfig
     // landing short because the shot fired before the camera finished turning.
     public int SnapReleaseDelayMs { get; set; } = 90;
 
+    // While the bow is drawn (button held), the marker's position is sampled every
+    // tick (without moving the mouse) to estimate its on-screen velocity. At
+    // release, the aim point is extrapolated LeadTimeMs further into the future -
+    // roughly the total latency until the shot actually registers (capture+detect
+    // overhead plus SnapReleaseDelayMs) - so a moving target is led instead of shot
+    // at its last-seen (by then stale) position. 0 disables prediction entirely.
+    public int LeadTimeMs { get; set; } = 150;
+
+    // Hard cap (px) on how far the lead prediction may shift the aim point, in
+    // either direction - guards against a noisy velocity estimate (e.g. the marker
+    // briefly jumping to a different blob) producing a wild extrapolated aim.
+    public int MaxLeadPx { get; set; } = 180;
+
+    // How far back (ms) tracking samples are kept for the velocity estimate. Older
+    // samples are dropped so the estimate reflects recent movement, not the whole draw.
+    public int TrackingHistoryMs { get; set; } = 400;
+
+    // Minimum tracking samples required before prediction kicks in; below this, the
+    // raw (un-predicted) detection is used - e.g. for a very quick draw-and-release
+    // there wasn't time to gather enough samples for a reliable velocity estimate.
+    public int MinTrackingSamples { get; set; } = 2;
+
     // When true, saves a screenshot + logs crosshair/marker/target coordinates on
     // every LMB press, and again right after the release-snap correction moves the
     // mouse - so you can verify after the fact exactly what the tool saw and where
