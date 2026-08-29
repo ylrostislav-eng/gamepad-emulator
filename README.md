@@ -121,7 +121,7 @@ playing against other people.
   "IgnoreTopPx": 110,
   "IgnoreBottomPx": 170,
   "SnapOnReleaseButton": "Left",
-  "SnapGain": 0.35,
+  "SnapGain": 0.5,
   "SnapReleaseDelayMs": 90,
   "DebugCaptureEnabled": true,
   "DebugCaptureDir": "debug_captures"

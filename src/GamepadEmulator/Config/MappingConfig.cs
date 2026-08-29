@@ -132,7 +132,7 @@ public sealed class AimAssistConfig
     // 1 injected pixel = 1 screen pixel of camera turn, which is rarely true - the
     // game's mouse sensitivity scales it. If the snap flies past the target, lower
     // this (e.g. 0.3); if it falls short, raise it. Tune in one direction at a time.
-    public double SnapGain { get; set; } = 0.35;
+    public double SnapGain { get; set; } = 0.5;
 
     // Holds the actual button release for this many ms after the correction move,
     // so the game's own camera-turn-rate cap has time to fully catch up to a large

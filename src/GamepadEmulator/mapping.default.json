@@ -50,7 +50,7 @@
     "SnapThresholdPx": 130,
     "SnapStrength": 0.9,
     "SnapOnReleaseButton": "Left",
-    "SnapGain": 0.35,
+    "SnapGain": 0.5,
     "SnapReleaseDelayMs": 90,
 
     "DebugCaptureEnabled": true,
