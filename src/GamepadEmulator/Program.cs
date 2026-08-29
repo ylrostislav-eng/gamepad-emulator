@@ -320,17 +320,17 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _controller.SetRightStick(outX, outY);
     }
 
-    private Rectangle GetAimRegion(out int radius, out int side)
+    // The whole primary screen is searched for the marker - no circular limit. Returns
+    // the region to capture (the full screen) plus where the crosshair sits within it.
+    private Rectangle GetAimRegion(out int crosshairX, out int crosshairY)
     {
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-        radius = Math.Max(10, _config.AimAssist.DetectionRadius);
-        side = radius * 2;
-        var crosshairX = screen.X + screen.Width / 2 + _config.AimAssist.CenterOffsetX;
-        var crosshairY = screen.Y + screen.Height / 2 + _config.AimAssist.CenterOffsetY;
-        return new Rectangle(crosshairX - radius, crosshairY - radius, side, side);
+        crosshairX = screen.Width / 2 + _config.AimAssist.CenterOffsetX;
+        crosshairY = screen.Height / 2 + _config.AimAssist.CenterOffsetY;
+        return screen;
     }
 
-    private Point? DetectMarker(Rectangle region)
+    private TargetMatch? DetectMarker(Rectangle region)
     {
         using var capture = ScreenCapture.CaptureRegion(region);
         var targetColor = System.Drawing.Color.FromArgb(
@@ -339,50 +339,43 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             capture, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
     }
 
+    // Chest offset scales with how big the marker appears (closer = bigger marker =
+    // bigger offset) instead of a single fixed pixel count that's only right at one
+    // distance. Falls back to the fixed ChestOffsetY when the blob is too small/noisy
+    // to measure reliably.
+    private double ComputeChestOffsetY(TargetMatch match) =>
+        match.Height is { } h && h > 0
+            ? h * _config.AimAssist.ChestOffsetMarkerRatio
+            : _config.AimAssist.ChestOffsetY;
+
     private void OnAimAssistTick()
     {
-        if (!_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
-        {
-            _overlay.Hide();
+        // Continuous pull is unused (and skipped entirely, to save CPU) once
+        // snap-on-release is configured - PerformSnapCorrection does its own fresh
+        // capture at the moment that matters instead.
+        if (_snapOnReleaseButton != null || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
             return;
-        }
 
-        var region = GetAimRegion(out var radius, out var side);
-
-        if (_config.AimAssist.ShowOverlay)
-            _overlay.ShowAt(region.Left, region.Top, side, side);
-        else
-            _overlay.Hide();
-
+        var region = GetAimRegion(out var crosshairX, out var crosshairY);
         var marker = DetectMarker(region);
 
-        if (marker is not { } markerPoint)
+        if (marker is not { } match)
         {
             _smoothedAimX = null;
             _smoothedAimY = null;
             return;
         }
 
-        var rawAimX = (double)markerPoint.X;
-        var rawAimY = markerPoint.Y + _config.AimAssist.ChestOffsetY;
+        var rawAimX = (double)match.Point.X;
+        var rawAimY = match.Point.Y + ComputeChestOffsetY(match);
 
         var smoothing = Math.Clamp(_config.AimAssist.Smoothing, 0.0, 0.98);
         _smoothedAimX = _smoothedAimX is { } sx ? sx * smoothing + rawAimX * (1 - smoothing) : rawAimX;
         _smoothedAimY = _smoothedAimY is { } sy ? sy * smoothing + rawAimY * (1 - smoothing) : rawAimY;
 
-        // In snap-on-release mode the pull only happens in PerformSnapCorrection -
-        // here we just keep the overlay/smoothed estimate fresh for that moment.
-        if (_snapOnReleaseButton != null)
-            return;
-
-        var centerX = side / 2.0;
-        var centerY = side / 2.0;
-        var dx = _smoothedAimX.Value - centerX;
-        var dy = _smoothedAimY.Value - centerY;
+        var dx = _smoothedAimX.Value - crosshairX;
+        var dy = _smoothedAimY.Value - crosshairY;
         var dist = Math.Sqrt(dx * dx + dy * dy);
-
-        if (dist > radius)
-            return;
 
         if (dist < Math.Max(0, _config.AimAssist.DeadZonePx))
             return;
@@ -396,9 +389,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         }
         else
         {
-            var edgeMultiplier = Math.Max(1.0, _config.AimAssist.EdgeGainMultiplier);
-            var edgeFactor = Math.Clamp(dist / radius, 0.0, 1.0);
-            var strength = Math.Max(0.0, _config.AimAssist.Strength) * (1.0 + (edgeMultiplier - 1.0) * edgeFactor);
+            var strength = Math.Max(0.0, _config.AimAssist.Strength);
             var maxStep = Math.Max(1, _config.AimAssist.MaxStepPx);
             moveX = Math.Clamp((int)Math.Round(dx * strength), -maxStep, maxStep);
             moveY = Math.Clamp((int)Math.Round(dy * strength), -maxStep, maxStep);
@@ -409,23 +400,17 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void PerformSnapCorrection()
     {
-        var region = GetAimRegion(out var radius, out var side);
+        var region = GetAimRegion(out var crosshairX, out var crosshairY);
         var marker = DetectMarker(region);
 
-        if (marker is not { } markerPoint)
+        if (marker is not { } match)
             return;
 
-        var aimX = markerPoint.X;
-        var aimY = markerPoint.Y + _config.AimAssist.ChestOffsetY;
+        var aimX = match.Point.X;
+        var aimY = match.Point.Y + ComputeChestOffsetY(match);
 
-        var centerX = side / 2.0;
-        var centerY = side / 2.0;
-        var dx = aimX - centerX;
-        var dy = aimY - centerY;
-        var dist = Math.Sqrt(dx * dx + dy * dy);
-
-        if (dist > radius)
-            return;
+        var dx = aimX - crosshairX;
+        var dy = aimY - crosshairY;
 
         var gain = Math.Max(0.0, _config.AimAssist.SnapGain);
         MouseInput.MoveRelative((int)Math.Round(dx * gain), (int)Math.Round(dy * gain));

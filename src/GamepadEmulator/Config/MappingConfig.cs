@@ -49,8 +49,15 @@ public sealed class AimAssistConfig
     public int ColorG { get; set; } = 30;
     public int ColorB { get; set; } = 30;
     public int ColorTolerance { get; set; } = 35;
-    public int DetectionRadius { get; set; } = 550;
+    // Fallback fixed offset (px) used only when the marker blob is too small/noisy to
+    // measure its size reliably. Normally the offset scales with MarkerHeightRatio.
     public int ChestOffsetY { get; set; } = 90;
+
+    // Chest offset = detected marker height (px) x this ratio. Scales the offset
+    // automatically with how big/close the marker appears on screen, instead of a
+    // fixed pixel count that's only right at one specific distance.
+    public double ChestOffsetMarkerRatio { get; set; } = 3.5;
+
     public int PixelStep { get; set; } = 2;
     public double Strength { get; set; } = 0.15;
     public bool ShowOverlay { get; set; } = true;
