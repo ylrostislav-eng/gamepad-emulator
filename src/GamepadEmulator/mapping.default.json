@@ -34,8 +34,9 @@
     "DetectionRadius": 550,
     "ChestOffsetY": 90,
     "PixelStep": 2,
-    "Strength": 0.35,
-    "Smoothing": 0.5,
+    "Strength": 0.2,
+    "Smoothing": 0.6,
+    "TickIntervalMs": 50,
     "ShowOverlay": true,
     "CenterOffsetX": 0,
     "CenterOffsetY": 0

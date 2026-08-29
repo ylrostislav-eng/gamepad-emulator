@@ -65,7 +65,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _tickTimer.Tick += (_, _) => OnTick();
         _tickTimer.Start();
 
-        _aimAssistTimer = new System.Windows.Forms.Timer { Interval = 16 };
+        _aimAssistTimer = new System.Windows.Forms.Timer { Interval = Math.Max(8, _config.AimAssist.TickIntervalMs) };
         _aimAssistTimer.Tick += (_, _) => OnAimAssistTick();
         _aimAssistTimer.Start();
 
@@ -98,6 +98,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
         var json = File.ReadAllText(path);
         _config = JsonSerializer.Deserialize<MappingConfig>(json, JsonOptions) ?? new MappingConfig();
+
+        if (_aimAssistTimer != null)
+            _aimAssistTimer.Interval = Math.Max(8, _config.AimAssist.TickIntervalMs);
 
         _toggleKey = Enum.TryParse<Keys>(_config.ToggleHotkey, ignoreCase: true, out var toggle) ? toggle : Keys.F9;
         _aimAssistToggleKey = Enum.TryParse<Keys>(_config.AimAssist.ToggleHotkey, ignoreCase: true, out var aimToggle) ? aimToggle : Keys.F10;
