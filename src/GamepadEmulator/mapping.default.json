@@ -49,6 +49,8 @@
     "MaxPullStepPx": 70,
     "PullIntervalMs": 16,
     "DetectionIntervalMs": 33,
+    "LockWatchdogMs": 800,
+    "LockWatchdogRadiusPx": 500,
 
     "UsePoseDetection": true,
     "PoseModelPath": "Models/yolov8n-pose.onnx",
@@ -56,6 +58,7 @@
     "PoseIouThreshold": 0.5,
     "PoseKeypointConfThreshold": 0.3,
     "PoseChestHipRatio": 0.35,
+    "PoseMaxBoxHeightFraction": 0.45,
 
     "DebugCaptureEnabled": true,
     "DebugCaptureDir": "debug_captures"

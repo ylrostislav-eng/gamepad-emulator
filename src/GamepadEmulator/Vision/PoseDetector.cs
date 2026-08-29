@@ -53,8 +53,15 @@ internal sealed class PoseDetector : IDisposable
     // Runs pose detection on the whole bitmap and returns the detection whose chest
     // point is nearest to the bitmap's center (i.e. nearest the crosshair), mirroring
     // TargetDetector.FindNearestMatch's approach to picking among multiple targets.
+    // Detections taller than maxBoxHeightFraction of the bitmap are rejected outright -
+    // this is what filters out the player's own visible arm/torso (a first/third-person
+    // view model held close to the camera fills a huge fraction of the frame, unlike
+    // even a close enemy), which would otherwise usually win "nearest to center" since
+    // it's often right in the middle of the screen, and - being attached to the camera
+    // rather than the game world - never gets any closer as the camera turns toward it,
+    // causing the aim to pull the same direction forever instead of converging.
     public PoseMatch? DetectNearestChest(Bitmap bitmap, float confThreshold, float iouThreshold,
-        float keypointConfThreshold, double chestHipRatio)
+        float keypointConfThreshold, double chestHipRatio, double maxBoxHeightFraction)
     {
         var (tensor, scale, padX, padY) = Preprocess(bitmap);
 
@@ -69,6 +76,7 @@ internal sealed class PoseDetector : IDisposable
 
         var centerX = bitmap.Width / 2.0;
         var centerY = bitmap.Height / 2.0;
+        var maxBoxHeight = bitmap.Height * Math.Clamp(maxBoxHeightFraction, 0.05, 1.0);
 
         PoseMatch? best = null;
         var bestDistSq = double.MaxValue;
@@ -76,6 +84,9 @@ internal sealed class PoseDetector : IDisposable
         foreach (var det in detections)
         {
             var match = ToPoseMatch(det, scale, padX, padY, keypointConfThreshold, chestHipRatio);
+            if (match.Box.Height > maxBoxHeight)
+                continue;
+
             var dx = match.ChestPoint.X - centerX;
             var dy = match.ChestPoint.Y - centerY;
             var distSq = dx * dx + dy * dy;

@@ -137,12 +137,15 @@ playing against other people.
   "MaxPullStepPx": 70,
   "PullIntervalMs": 16,
   "DetectionIntervalMs": 33,
+  "LockWatchdogMs": 800,
+  "LockWatchdogRadiusPx": 500,
   "UsePoseDetection": true,
   "PoseModelPath": "Models/yolov8n-pose.onnx",
   "PoseConfidenceThreshold": 0.4,
   "PoseIouThreshold": 0.5,
   "PoseKeypointConfThreshold": 0.3,
   "PoseChestHipRatio": 0.35,
+  "PoseMaxBoxHeightFraction": 0.45,
   "DebugCaptureEnabled": true,
   "DebugCaptureDir": "debug_captures"
 }
@@ -176,6 +179,16 @@ Tuning knobs for the hard-lock:
   camera is turning, that's almost always a screen-anchored HUD element being
   mistaken for the marker - increase the matching margin to exclude it, or
   narrow `ColorTolerance` and re-probe the marker's exact color with `F11`.
+- `LockWatchdogMs`/`LockWatchdogRadiusPx` — a safety valve: if the aim is
+  still farther than `LockWatchdogRadiusPx` from the target after
+  `LockWatchdogMs` of continuous pulling, the lock disengages for the rest of
+  the hold (release and re-press to retry) instead of pulling forever. This
+  is what stops a runaway spinning/diving camera if the detector ever locks
+  onto something that isn't actually part of the game world (a screen-anchored
+  HUD element, or the player's own view-model before `PoseMaxBoxHeightFraction`
+  below) - turning toward such a thing never reduces the on-screen distance
+  to it, so without this it would just keep pulling in the same direction
+  indefinitely.
 
 If the game runs in exclusive fullscreen, screen capture may not work;
 switch it to windowed/borderless for testing.
@@ -201,13 +214,25 @@ loop) — only where the aim point comes from changes.
   GPU/driver, corrupted file), the app automatically falls back to the
   color-marker path and shows a tray balloon saying so — it never blocks the
   tool from running.
+- **Rejects anything taller than `PoseMaxBoxHeightFraction` of the screen** -
+  this specifically filters out the player's own visible arm/bow (the view
+  model), which fills a large fraction of the frame up close to the camera
+  and would otherwise often win "nearest to center" over the actual, smaller,
+  farther-away enemy. Since the view model is attached to the camera rather
+  than the game world, locking onto it by mistake doesn't just miss - it
+  causes a runaway spin/dive, because turning the camera toward it never
+  makes the on-screen distance to it shrink (see `LockWatchdogMs` above,
+  which is the backstop if this filter alone doesn't catch it in some other
+  game/camera setup).
 - Tuning: `PoseConfidenceThreshold` (raise if it's latching onto
   background/props; lower if it's missing the actual enemy),
   `PoseKeypointConfThreshold` (how confident a shoulder/hip reading must be
   before it's trusted for the chest estimate — the fallback below this is a
   fixed fraction of the detected person's bounding box), `PoseChestHipRatio`
   (0 = right at the shoulders, 1 = right at the hips; where between them the
-  chest actually sits).
+  chest actually sits), `PoseMaxBoxHeightFraction` (lower it if the player's
+  own view-model is still occasionally picked; raise it if a legitimately
+  close/large enemy gets rejected).
 - The pretrained model was trained on real photos of people, not this game's
   specific art style, so accuracy on your character may vary — that's what
   it's for testing. If it's unreliable, the fixed-offset marker path

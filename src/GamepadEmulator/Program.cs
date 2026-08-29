@@ -44,6 +44,11 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private MouseButtons? _hardLockButton;
     private string _debugCaptureDir = "";
 
+    // Runaway-lock watchdog state - both only ever touched from the UI thread
+    // (OnMouseButton and OnPullTick both run there), so no synchronization needed.
+    private long _lockEngagedAtMs;
+    private bool _lockWatchdogTripped;
+
     // Set from the input hook thread (button press/release), read from the background
     // detection loop thread - both plain field accesses, so this needs to be volatile
     // for the write to be visible promptly across threads.
@@ -388,7 +393,14 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         // button event itself is never touched, so the shot always fires exactly when
         // the player releases, never before or after a correction.
         if (button == _hardLockButton && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
+        {
             _isDrawing = pressed;
+            if (pressed)
+            {
+                _lockEngagedAtMs = Environment.TickCount64;
+                _lockWatchdogTripped = false;
+            }
+        }
 
         if (pressed && !IsActiveNow())
             return;
@@ -441,7 +453,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     {
         ApplyPendingPoseSwap();
 
-        if (!_isDrawing || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
+        if (!_isDrawing || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow() || _lockWatchdogTripped)
             return;
 
         Point? target;
@@ -458,6 +470,21 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         var dx = point.X - crosshairX;
         var dy = point.Y - crosshairY;
         var dist = Math.Sqrt(dx * dx + dy * dy);
+
+        // Safety valve: if it's still nowhere close after a while, this is almost
+        // certainly a false detection that isn't part of the actual game world (so
+        // turning the camera toward it never reduces the error) - disengage instead of
+        // spinning indefinitely. Release and re-press the hard-lock button to retry.
+        var watchdogRadius = Math.Max(1, _config.AimAssist.LockWatchdogRadiusPx);
+        var watchdogMs = Math.Max(1, _config.AimAssist.LockWatchdogMs);
+        if (dist > watchdogRadius && Environment.TickCount64 - _lockEngagedAtMs > watchdogMs)
+        {
+            _lockWatchdogTripped = true;
+            _trayIcon.ShowBalloonTip(4000, "Gamepad Emulator",
+                "Aim-lock disengaged: target never settled (likely a false detection) - release and re-press to retry.",
+                ToolTipIcon.Warning);
+            return;
+        }
 
         if (dist < Math.Max(0, _config.AimAssist.LockDeadZonePx))
             return;
@@ -576,7 +603,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
                     haveDetector = true;
                     pose = _poseDetector.DetectNearestChest(bitmap,
                         _config.AimAssist.PoseConfidenceThreshold, _config.AimAssist.PoseIouThreshold,
-                        _config.AimAssist.PoseKeypointConfThreshold, _config.AimAssist.PoseChestHipRatio);
+                        _config.AimAssist.PoseKeypointConfThreshold, _config.AimAssist.PoseChestHipRatio,
+                        _config.AimAssist.PoseMaxBoxHeightFraction);
                 }
             }
             finally
