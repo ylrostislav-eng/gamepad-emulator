@@ -37,6 +37,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly Dictionary<Keys, string[]> _keyToButtonCombo = new();
     private readonly Dictionary<MouseButtons, string> _mouseButtonToButton = new();
     private Keys _leftUp, _leftDown, _leftLeft, _leftRight;
+    private double? _smoothedAimX, _smoothedAimY;
 
     private bool _enabled = true;
     private bool _aimAssistEnabled;
@@ -301,15 +302,23 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             capture, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
 
         if (marker is not { } markerPoint)
+        {
+            _smoothedAimX = null;
+            _smoothedAimY = null;
             return;
+        }
 
-        var aimX = markerPoint.X;
-        var aimY = markerPoint.Y + _config.AimAssist.ChestOffsetY;
+        var rawAimX = (double)markerPoint.X;
+        var rawAimY = markerPoint.Y + _config.AimAssist.ChestOffsetY;
+
+        var smoothing = Math.Clamp(_config.AimAssist.Smoothing, 0.0, 0.98);
+        _smoothedAimX = _smoothedAimX is { } sx ? sx * smoothing + rawAimX * (1 - smoothing) : rawAimX;
+        _smoothedAimY = _smoothedAimY is { } sy ? sy * smoothing + rawAimY * (1 - smoothing) : rawAimY;
 
         var centerX = side / 2.0;
         var centerY = side / 2.0;
-        var dx = aimX - centerX;
-        var dy = aimY - centerY;
+        var dx = _smoothedAimX.Value - centerX;
+        var dy = _smoothedAimY.Value - centerY;
         var dist = Math.Sqrt(dx * dx + dy * dy);
 
         if (dist > radius)

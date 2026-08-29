@@ -43,11 +43,14 @@ public sealed class AimAssistConfig
     public int ColorG { get; set; } = 30;
     public int ColorB { get; set; } = 30;
     public int ColorTolerance { get; set; } = 35;
-    public int DetectionRadius { get; set; } = 220;
+    public int DetectionRadius { get; set; } = 550;
     public int ChestOffsetY { get; set; } = 90;
     public int PixelStep { get; set; } = 2;
-    public double Strength { get; set; } = 1.0;
+    public double Strength { get; set; } = 0.35;
     public bool ShowOverlay { get; set; } = true;
+
+    // 0 = no smoothing (raw, jittery), closer to 1 = heavier smoothing (laggier but steadier).
+    public double Smoothing { get; set; } = 0.5;
 
     // Manual nudge for where the crosshair actually sits, if it isn't exact screen center
     // (e.g. residual offset from display scaling). Positive Y = crosshair is below center.

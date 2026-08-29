@@ -31,10 +31,11 @@
     "ColorG": 30,
     "ColorB": 30,
     "ColorTolerance": 35,
-    "DetectionRadius": 220,
+    "DetectionRadius": 550,
     "ChestOffsetY": 90,
     "PixelStep": 2,
-    "Strength": 1.0,
+    "Strength": 0.35,
+    "Smoothing": 0.5,
     "ShowOverlay": true,
     "CenterOffsetX": 0,
     "CenterOffsetY": 0
