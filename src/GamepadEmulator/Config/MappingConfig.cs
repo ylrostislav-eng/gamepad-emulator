@@ -139,13 +139,13 @@ public sealed class AimAssistConfig
     public int LockWatchdogMs { get; set; } = 500;
     public int LockWatchdogRadiusPx { get; set; } = 500;
 
-    // When true, aim at a person detected directly from pixels (pretrained YOLOv8-pose
-    // model, chest estimated from shoulder/hip keypoints) instead of the color-matched
-    // marker. Immune to the marker's false positives (other red HUD elements) and to
-    // its lack of a real distance signal - a detected silhouette's size does track
-    // distance, unlike the fixed-screen-size marker icon. Falls back to the color
-    // marker automatically if the model file is missing or fails to load.
-    public bool UsePoseDetection { get; set; } = false;
+    // Which detector supplies the aim point: "ColorMarker" (the original color-matched
+    // marker + ChestOffsetY), "Pose" (pretrained general-purpose YOLOv8-pose model,
+    // chest estimated from shoulder/hip keypoints), or "Custom" (a YOLOv8 model you
+    // fine-tuned yourself on screenshots from this specific game - see CustomModelPath
+    // below; the box it detects IS the chest, no offset needed). Falls back to the
+    // color marker automatically if the chosen model's file is missing or fails to load.
+    public string DetectionMode { get; set; } = "ColorMarker";
 
     // Path (relative to the exe) to the ONNX pose model.
     public string PoseModelPath { get; set; } = "Models/yolov8n-pose.onnx";
@@ -173,6 +173,16 @@ public sealed class AimAssistConfig
     // mistaken for the enemy. Lower this if a legitimately close/large enemy keeps
     // getting rejected; raise it if the player's own view-model still gets picked.
     public double PoseMaxBoxHeightFraction { get; set; } = 0.45;
+
+    // Path (relative to the exe) to your fine-tuned custom ONNX model, used when
+    // DetectionMode is "Custom".
+    public string CustomModelPath { get; set; } = "Models/target-v1.onnx";
+
+    // Minimum detection confidence (0-1) to accept a custom-model detection at all.
+    public float CustomConfidenceThreshold { get; set; } = 0.25f;
+
+    // IoU threshold for non-max suppression on the custom model's detections.
+    public float CustomIouThreshold { get; set; } = 0.5f;
 
     // When true, saves a screenshot + logs crosshair/target coordinates on every LMB
     // press and release - so you can verify after the fact exactly what the tool saw

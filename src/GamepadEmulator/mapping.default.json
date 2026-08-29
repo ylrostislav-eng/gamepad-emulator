@@ -54,13 +54,18 @@
     "LockWatchdogMs": 500,
     "LockWatchdogRadiusPx": 500,
 
-    "UsePoseDetection": true,
+    "DetectionMode": "Custom",
+
     "PoseModelPath": "Models/yolov8n-pose.onnx",
     "PoseConfidenceThreshold": 0.4,
     "PoseIouThreshold": 0.5,
     "PoseKeypointConfThreshold": 0.3,
     "PoseChestHipRatio": 0.35,
     "PoseMaxBoxHeightFraction": 0.45,
+
+    "CustomModelPath": "Models/target-v1.onnx",
+    "CustomConfidenceThreshold": 0.25,
+    "CustomIouThreshold": 0.5,
 
     "DebugCaptureEnabled": true,
     "DebugCaptureDir": "debug_captures"

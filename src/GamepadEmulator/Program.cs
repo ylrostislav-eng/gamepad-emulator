@@ -18,6 +18,8 @@ internal static class Program
     }
 }
 
+internal enum DetectorMode { ColorMarker, Pose, Custom }
+
 internal sealed class EmulatorApplicationContext : ApplicationContext
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
@@ -42,6 +44,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly Dictionary<MouseButtons, string> _mouseButtonToButton = new();
     private Keys _leftUp, _leftDown, _leftLeft, _leftRight;
     private MouseButtons? _hardLockButton;
+    private DetectorMode _detectionMode = DetectorMode.ColorMarker;
     private string _debugCaptureDir = "";
 
     // Runaway-lock watchdog state - all only ever touched from the UI thread
@@ -74,6 +77,16 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private volatile bool _poseSwapPending;
     private PoseDetector? _pendingPoseDetector;
     private (string Message, ToolTipIcon Icon)? _pendingPoseNotice;
+
+    // Same load/swap pattern as the pose detector above, for a model fine-tuned on
+    // this specific game (DetectionMode == "Custom").
+    private readonly ReaderWriterLockSlim _customDetectorLock = new();
+    private ObjectDetector? _customDetector;
+    private string _customModelPath = "";
+    private int _customLoadGeneration;
+    private volatile bool _customSwapPending;
+    private ObjectDetector? _pendingCustomDetector;
+    private (string Message, ToolTipIcon Icon)? _pendingCustomNotice;
 
     private bool _enabled = true;
     private volatile bool _aimAssistEnabled;
@@ -152,11 +165,15 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _hardLockButton = Enum.TryParse<MouseButtons>(_config.AimAssist.HardLockButton, ignoreCase: true, out var lockBtn)
             ? lockBtn
             : null;
+        _detectionMode = Enum.TryParse<DetectorMode>(_config.AimAssist.DetectionMode, ignoreCase: true, out var mode)
+            ? mode
+            : DetectorMode.ColorMarker;
         _debugCaptureDir = Path.Combine(exeDir, string.IsNullOrWhiteSpace(_config.AimAssist.DebugCaptureDir)
             ? "debug_captures"
             : _config.AimAssist.DebugCaptureDir);
 
         LoadPoseDetector(exeDir);
+        LoadCustomDetector(exeDir);
 
         _leftUp = ParseKey(_config.LeftStick.Up, Keys.W);
         _leftDown = ParseKey(_config.LeftStick.Down, Keys.S);
@@ -185,8 +202,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         }
     }
 
-    // Kicks off (re)loading the ONNX pose model in the BACKGROUND when UsePoseDetection
-    // is on and the resolved path changed (including on the tray menu's "Reload
+    // Kicks off (re)loading the ONNX pose model in the BACKGROUND when DetectionMode is
+    // "Pose" and the resolved path changed (including on the tray menu's "Reload
     // mapping"). Model init + DirectML setup can take a while, and on a bad
     // GPU/driver combo could even hang - this must never run on the UI thread, or the
     // whole app (tray icon, message loop, the ability to Exit at all) freezes solid
@@ -194,7 +211,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     // later, on the UI thread, from OnPullTick - see ApplyPendingPoseSwap.
     private void LoadPoseDetector(string exeDir)
     {
-        if (!_config.AimAssist.UsePoseDetection)
+        if (_detectionMode != DetectorMode.Pose)
         {
             _poseLoadGeneration++;
             if (_poseModelPath != "")
@@ -279,6 +296,95 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         {
             _trayIcon.ShowBalloonTip(6000, "Gamepad Emulator", notice.Message, notice.Icon);
             _pendingPoseNotice = null;
+        }
+    }
+
+    // Same background-load pattern as LoadPoseDetector, for the custom fine-tuned
+    // model (DetectionMode == "Custom").
+    private void LoadCustomDetector(string exeDir)
+    {
+        if (_detectionMode != DetectorMode.Custom)
+        {
+            _customLoadGeneration++;
+            if (_customModelPath != "")
+            {
+                _pendingCustomDetector = null;
+                _pendingCustomNotice = null;
+                _customSwapPending = true;
+            }
+            _customModelPath = "";
+            return;
+        }
+
+        var customModelPath = Path.Combine(exeDir, string.IsNullOrWhiteSpace(_config.AimAssist.CustomModelPath)
+            ? "Models/target-v1.onnx"
+            : _config.AimAssist.CustomModelPath);
+
+        if (_customDetector != null && _customModelPath == customModelPath)
+            return;
+
+        _customModelPath = customModelPath;
+        var generation = ++_customLoadGeneration;
+
+        Task.Run(() =>
+        {
+            ObjectDetector? loaded = null;
+            (string Message, ToolTipIcon Icon)? notice = null;
+
+            if (!File.Exists(customModelPath))
+            {
+                notice = ($"Custom model not found: {customModelPath}. Falling back to color-marker detection.", ToolTipIcon.Warning);
+            }
+            else
+            {
+                try
+                {
+                    loaded = new ObjectDetector(customModelPath);
+                }
+                catch (Exception ex)
+                {
+                    notice = ($"Failed to load custom model: {ex.Message}. Falling back to color-marker detection.", ToolTipIcon.Error);
+                }
+            }
+
+            if (generation != _customLoadGeneration)
+            {
+                loaded?.Dispose();
+                return;
+            }
+
+            _pendingCustomDetector = loaded;
+            _pendingCustomNotice = notice;
+            _customSwapPending = true;
+        });
+    }
+
+    // Applies a custom-model load/unload that finished on a background thread. Runs on
+    // the UI thread only; guarded by _customDetectorLock so it can never race with an
+    // in-flight inference call on the background detection loop thread.
+    private void ApplyPendingCustomSwap()
+    {
+        if (!_customSwapPending)
+            return;
+
+        _customSwapPending = false;
+
+        _customDetectorLock.EnterWriteLock();
+        try
+        {
+            _customDetector?.Dispose();
+            _customDetector = _pendingCustomDetector;
+        }
+        finally
+        {
+            _customDetectorLock.ExitWriteLock();
+        }
+        _pendingCustomDetector = null;
+
+        if (_pendingCustomNotice is { } notice)
+        {
+            _trayIcon.ShowBalloonTip(6000, "Gamepad Emulator", notice.Message, notice.Icon);
+            _pendingCustomNotice = null;
         }
     }
 
@@ -456,6 +562,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private void OnPullTick()
     {
         ApplyPendingPoseSwap();
+        ApplyPendingCustomSwap();
 
         if (!_isDrawing || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow() || _lockWatchdogTripped)
             return;
@@ -579,7 +686,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         }
 
         if (_config.AimAssist.DebugCaptureEnabled)
-            SaveDebugSnapshot(debugLabel, capture, crosshairX, crosshairY, detected?.Marker, detected?.Pose);
+            SaveDebugSnapshot(debugLabel, capture, crosshairX, crosshairY, detected?.Marker, detected?.Pose, detected?.Custom);
     }
 
     // Effectively the whole primary screen is searched for the target, minus a
@@ -610,15 +717,15 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     }
 
     // Detects the final aim point using whichever detection mode is configured: the
-    // pretrained pose model if UsePoseDetection is on and it loaded successfully
-    // (already gives a chest point directly, no further offset needed), otherwise the
-    // color-marker path (marker position + ComputeChestOffsetY). Returns null if
-    // nothing was detected. Also returns the underlying marker/pose result so callers
-    // can log detailed diagnostics. Safe to call from the background detection loop
-    // thread - _poseDetector access is guarded by _poseDetectorLock.
-    private (Point Point, TargetMatch? Marker, PoseMatch? Pose)? DetectAim(Bitmap bitmap)
+    // pretrained pose model, a custom model fine-tuned on this specific game (either
+    // already gives a chest point directly, no further offset needed), or the
+    // color-marker path (marker position + ComputeChestOffsetY) as the default/fallback.
+    // Returns null if nothing was detected. Also returns the underlying marker/pose/
+    // custom result so callers can log detailed diagnostics. Safe to call from the
+    // background detection loop thread - detector access is guarded by their locks.
+    private (Point Point, TargetMatch? Marker, PoseMatch? Pose, ObjectMatch? Custom)? DetectAim(Bitmap bitmap)
     {
-        if (_config.AimAssist.UsePoseDetection)
+        if (_detectionMode == DetectorMode.Pose)
         {
             PoseMatch? pose = null;
             var haveDetector = false;
@@ -641,7 +748,30 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             }
 
             if (haveDetector)
-                return pose is { } p ? (p.ChestPoint, null, p) : null;
+                return pose is { } p ? (p.ChestPoint, null, p, null) : null;
+        }
+        else if (_detectionMode == DetectorMode.Custom)
+        {
+            ObjectMatch? custom = null;
+            var haveDetector = false;
+
+            _customDetectorLock.EnterReadLock();
+            try
+            {
+                if (_customDetector != null)
+                {
+                    haveDetector = true;
+                    custom = _customDetector.DetectNearestTarget(bitmap,
+                        _config.AimAssist.CustomConfidenceThreshold, _config.AimAssist.CustomIouThreshold);
+                }
+            }
+            finally
+            {
+                _customDetectorLock.ExitReadLock();
+            }
+
+            if (haveDetector)
+                return custom is { } c ? (c.ChestPoint, null, null, c) : null;
         }
 
         var marker = DetectMarkerFromBitmap(bitmap);
@@ -649,11 +779,11 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             return null;
 
         var point = new Point(m.Point.X, (int)Math.Round(m.Point.Y + ComputeChestOffsetY(m)));
-        return (point, marker, null);
+        return (point, marker, null, null);
     }
 
     private void SaveDebugSnapshot(string label, Bitmap screenshot, int crosshairX, int crosshairY,
-        TargetMatch? marker, PoseMatch? pose)
+        TargetMatch? marker, PoseMatch? pose, ObjectMatch? custom)
     {
         double? targetX = null, targetY = null;
         if (marker is { } match)
@@ -666,10 +796,15 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             targetX = p.ChestPoint.X;
             targetY = p.ChestPoint.Y;
         }
+        else if (custom is { } c)
+        {
+            targetX = c.ChestPoint.X;
+            targetY = c.ChestPoint.Y;
+        }
 
         DebugCapture.Save(_debugCaptureDir, label, screenshot, new (string, object?)[]
         {
-            ("Mode", _config.AimAssist.UsePoseDetection && _poseDetector != null ? "Pose" : "ColorMarker"),
+            ("Mode", _detectionMode.ToString()),
             ("CrosshairX", crosshairX),
             ("CrosshairY", crosshairY),
             ("MarkerFound", marker != null),
@@ -680,6 +815,10 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             ("PoseConfidence", pose?.Confidence),
             ("PoseBoxWidth", pose?.Box.Width),
             ("PoseBoxHeight", pose?.Box.Height),
+            ("CustomFound", custom != null),
+            ("CustomConfidence", custom?.Confidence),
+            ("CustomBoxWidth", custom?.Box.Width),
+            ("CustomBoxHeight", custom?.Box.Height),
             ("TargetX", targetX),
             ("TargetY", targetY),
         });
@@ -728,6 +867,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _poseDetector?.Dispose();
         _pendingPoseDetector?.Dispose();
         _poseDetectorLock.Dispose();
+        _customDetector?.Dispose();
+        _pendingCustomDetector?.Dispose();
+        _customDetectorLock.Dispose();
         _detectionLoopCts.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();

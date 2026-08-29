@@ -141,13 +141,16 @@ playing against other people.
   "LockProgressTolerancePx": 3,
   "LockWatchdogMs": 500,
   "LockWatchdogRadiusPx": 500,
-  "UsePoseDetection": true,
+  "DetectionMode": "Custom",
   "PoseModelPath": "Models/yolov8n-pose.onnx",
   "PoseConfidenceThreshold": 0.4,
   "PoseIouThreshold": 0.5,
   "PoseKeypointConfThreshold": 0.3,
   "PoseChestHipRatio": 0.35,
   "PoseMaxBoxHeightFraction": 0.45,
+  "CustomModelPath": "Models/target-v1.onnx",
+  "CustomConfidenceThreshold": 0.25,
+  "CustomIouThreshold": 0.5,
   "DebugCaptureEnabled": true,
   "DebugCaptureDir": "debug_captures"
 }
@@ -199,27 +202,31 @@ Tuning knobs for the hard-lock:
 If the game runs in exclusive fullscreen, screen capture may not work;
 switch it to windowed/borderless for testing.
 
-### Pose detection (aim at the person, not the marker)
+### Detection modes: color marker, pretrained pose, or your own fine-tuned model
 
-`UsePoseDetection: true` switches the aim point from the color-matched
-marker to a person detected directly from pixels (bundled pretrained
-YOLOv8-pose model, `Models/yolov8n-pose.onnx`, COCO keypoints) — the chest is
-estimated from the shoulder/hip keypoints instead of a fixed pixel offset
-below the marker. This sidesteps two problems the marker has: it's immune to
-other red HUD elements being mistaken for it (there's nothing color-specific
-to confuse it), and a detected silhouette's size actually does track
-distance, unlike the marker (a fixed-screen-size icon — see
-`UseMarkerHeightScaling` above). It reuses the exact same downstream pipeline
-as the marker path (crosshair math, hard-lock pull, background detection
-loop) — only where the aim point comes from changes.
+`AimAssist.DetectionMode` picks which detector supplies the aim point -
+`"ColorMarker"` (the original, default/fallback), `"Pose"` (pretrained
+general-purpose person detector, below), or `"Custom"` (a model you fine-tune
+yourself on screenshots from this specific game - see the next section). All
+three reuse the exact same downstream pipeline (crosshair math, hard-lock
+pull, background detection loop) - only where the aim point comes from changes.
+If the chosen mode's model file is missing or fails to load, the app
+automatically falls back to `ColorMarker` and shows a tray balloon saying so.
+
+#### Pose detection (aim at the person, not the marker)
+
+`DetectionMode: "Pose"` uses a person detected directly from pixels (bundled
+pretrained YOLOv8-pose model, `Models/yolov8n-pose.onnx`, COCO keypoints) —
+the chest is estimated from the shoulder/hip keypoints instead of a fixed
+pixel offset below the marker. This sidesteps two problems the marker has:
+it's immune to other red HUD elements being mistaken for it (there's nothing
+color-specific to confuse it), and a detected silhouette's size actually does
+track distance, unlike the marker (a fixed-screen-size icon — see
+`UseMarkerHeightScaling` above).
 
 - Runs on GPU via DirectML if available (NVIDIA/AMD/Intel, through the
   normal graphics driver — no separate CUDA/cuDNN install needed), falling
   back to CPU automatically otherwise.
-- If the model file is missing or fails to load (wrong path, no compatible
-  GPU/driver, corrupted file), the app automatically falls back to the
-  color-marker path and shows a tray balloon saying so — it never blocks the
-  tool from running.
 - **Rejects anything taller than `PoseMaxBoxHeightFraction` of the screen** -
   this specifically filters out the player's own visible arm/bow (the view
   model), which fills a large fraction of the frame up close to the camera
@@ -242,10 +249,43 @@ loop) — only where the aim point comes from changes.
 - The pretrained model was trained on real photos of people, not this game's
   specific art style, so accuracy on your character may vary — that's what
   it's for testing. If it's unreliable, the fixed-offset marker path
-  (`UsePoseDetection: false`) remains fully intact as a fallback; a next step
-  from here would be fine-tuning the model on screenshots from your own game
-  for better accuracy, which needs a labeled dataset and is a bigger
-  undertaking than flipping this flag.
+  (`DetectionMode: "ColorMarker"`) remains fully intact as a fallback, or
+  fine-tune your own model instead - see below.
+
+#### Custom detection (a model fine-tuned on your own game)
+
+`DetectionMode: "Custom"` uses a YOLOv8 model you train yourself on
+screenshots from this specific game (`Models/target-v1.onnx` by default -
+`CustomModelPath` to point elsewhere). Unlike the pretrained pose model, it
+never saw the player's own arm/bow labeled as a target during training, so -
+given enough varied examples - it learns not to fire on it, and it only
+needs a single tight box per enemy (no keypoints), so it's simpler and faster
+to label a dataset for than pose. The detected box's center is used directly
+as the aim point (it was trained by labeling boxes around the chest/torso
+itself, so no `ChestOffsetY`-style guessing is needed).
+
+To build/update one:
+1. Turn on `DebugCaptureEnabled` and play normally for 15-20 minutes - the
+   background detection loop already saves screenshots covering near/far
+   enemies, different lighting, idle and fighting poses, for free.
+2. Label ~150-300 of the more varied ones with a single class (a tight box
+   around each visible enemy's chest/torso; leave frames with no enemy
+   unlabeled) - e.g. via [Roboflow](https://roboflow.com)'s free web
+   annotator, which also handles the train/val split and YOLOv8-format export.
+   Explicitly including some frames with only the player's own arm/bow
+   visible and *no* box drawn helps it learn that's not a target.
+3. Export as YOLOv8 format and fine-tune `yolov8n.pt` on it (e.g. via
+   `ultralytics`' `model.train(data=...)`, starting from the COCO-pretrained
+   nano checkpoint so a small dataset still transfers reasonably well), then
+   export to ONNX (`model.export(format='onnx', imgsz=640)`) and drop it in
+   as `CustomModelPath`.
+
+Tuning: `CustomConfidenceThreshold` (raise if it's latching onto background/
+props; lower if it's missing the actual enemy), `CustomIouThreshold` (how
+much overlapping duplicate detections get collapsed into one). A model
+trained on only a few dozen images will have real gaps in accuracy - that's
+expected for a first pass; add more varied examples and retrain if specific
+situations (a certain lighting, distance, or pose) keep failing.
 
 For a permanent, distance-proof fix without any detection at all (screen
 color or pose model): since this is your own game with source access, the
@@ -273,15 +313,16 @@ default `debug_captures/`) on its own schedule while `HardLockButton` is held:
 All rows go into a single `log.csv` in that folder, with columns:
 `Timestamp, Label, Screenshot, Mode, CrosshairX, CrosshairY, MarkerFound,
 MarkerX, MarkerY, MarkerHeight, PoseFound, PoseConfidence, PoseBoxWidth,
-PoseBoxHeight, TargetX, TargetY`:
-- `Mode` — `"Pose"` or `"ColorMarker"`, whichever actually ran for that row
-  (lets you tell at a glance whether pose detection was active or had fallen
-  back).
-- `MarkerX/Y/Height` are populated only in `ColorMarker` mode; `PoseFound`,
-  `PoseConfidence`, `PoseBoxWidth/Height` only in `Pose` mode.
-- `TargetX/Y` is the detected aim point (marker+chest-offset, or the pose
-  model's chest estimate) - this is what the pull timer was nudging toward
-  around that time.
+PoseBoxHeight, CustomFound, CustomConfidence, CustomBoxWidth, CustomBoxHeight,
+TargetX, TargetY`:
+- `Mode` — `"ColorMarker"`, `"Pose"`, or `"Custom"`, whichever actually ran
+  for that row (lets you tell at a glance which detector was active).
+- `MarkerX/Y/Height` are populated only in `ColorMarker` mode; `PoseFound`/
+  `PoseConfidence`/`PoseBoxWidth/Height` only in `Pose` mode;
+  `CustomFound`/`CustomConfidence`/`CustomBoxWidth/Height` only in `Custom` mode.
+- `TargetX/Y` is the detected aim point (marker+chest-offset, the pose
+  model's chest estimate, or the custom model's box center) - this is what
+  the pull timer was nudging toward around that time.
 - `Screenshot` is the matching PNG filename in the same folder.
 
 Turn this off (`DebugCaptureEnabled: false`) once you're done tuning — with
@@ -298,8 +339,10 @@ src/GamepadEmulator/
   Input/LowLevelHooks.cs   keyboard/mouse hook wrapper
   Virtual/VirtualXbox360Controller.cs  ViGEmBus wrapper
   Vision/TargetDetector.cs  color-marker detection
-  Vision/PoseDetector.cs   ONNX pose-model detection
+  Vision/PoseDetector.cs   ONNX pretrained pose-model detection
+  Vision/ObjectDetector.cs  ONNX custom fine-tuned model detection
   Models/yolov8n-pose.onnx  bundled pretrained pose model
+  Models/target-v1.onnx   custom model fine-tuned on this game (update as you retrain)
 ```
 
 ## Uninstalling
