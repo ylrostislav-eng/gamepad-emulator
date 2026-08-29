@@ -328,8 +328,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             return;
 
         var strength = Math.Max(0.0, _config.AimAssist.Strength);
-        var moveX = (int)Math.Round(dx * strength);
-        var moveY = (int)Math.Round(dy * strength);
+        var maxStep = Math.Max(1, _config.AimAssist.MaxStepPx);
+        var moveX = Math.Clamp((int)Math.Round(dx * strength), -maxStep, maxStep);
+        var moveY = Math.Clamp((int)Math.Round(dy * strength), -maxStep, maxStep);
 
         MouseInput.MoveRelative(moveX, moveY);
     }
