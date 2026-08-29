@@ -26,12 +26,14 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _enabledMenuItem;
     private readonly LowLevelHooks _hooks;
     private readonly System.Windows.Forms.Timer _tickTimer;
-    private readonly System.Windows.Forms.Timer _aimAssistTimer;
-    private readonly System.Windows.Forms.Timer _snapReleaseTimer;
+    private readonly System.Windows.Forms.Timer _pullTimer;
     private readonly VirtualXbox360Controller _controller;
     private readonly AimOverlayForm _overlay;
 
-    private MappingConfig _config = new();
+    // Reassigned wholesale by LoadConfig() (never mutated in place), and read from
+    // both the UI thread and the background detection loop thread - volatile so a
+    // reload becomes visible to the loop promptly.
+    private volatile MappingConfig _config = new();
     private Keys _toggleKey = Keys.F9;
     private Keys _aimAssistToggleKey = Keys.F10;
     private Keys _colorProbeKey = Keys.F11;
@@ -39,12 +41,26 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly Dictionary<Keys, string[]> _keyToButtonCombo = new();
     private readonly Dictionary<MouseButtons, string> _mouseButtonToButton = new();
     private Keys _leftUp, _leftDown, _leftLeft, _leftRight;
-    private double? _smoothedAimX, _smoothedAimY;
-    private MouseButtons? _snapOnReleaseButton;
-    private MouseButtons? _snapReleasePending;
+    private MouseButtons? _hardLockButton;
     private string _debugCaptureDir = "";
-    private bool _isDrawing;
-    private readonly List<(long TimestampMs, double X, double Y)> _trackingHistory = new();
+
+    // Set from the input hook thread (button press/release), read from the background
+    // detection loop thread - both plain field accesses, so this needs to be volatile
+    // for the write to be visible promptly across threads.
+    private volatile bool _isDrawing;
+
+    // Published by the background detection loop, read by the fast UI-thread pull
+    // timer. Guarded by a plain lock - contention is negligible (a few field reads a
+    // tick), so a full lock is simpler and cheap enough here.
+    private readonly object _detectionLock = new();
+    private (long TimestampMs, Point Point)? _latestDetection;
+
+    private readonly CancellationTokenSource _detectionLoopCts = new();
+
+    // Guards _poseDetector: the background detection loop calls Run() on it, while
+    // ApplyPendingPoseSwap (UI thread) may Dispose() and replace it after a reload -
+    // without this, those two could race on the same native session.
+    private readonly ReaderWriterLockSlim _poseDetectorLock = new();
     private PoseDetector? _poseDetector;
     private string _poseModelPath = "";
     private int _poseLoadGeneration;
@@ -53,7 +69,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private (string Message, ToolTipIcon Icon)? _pendingPoseNotice;
 
     private bool _enabled = true;
-    private bool _aimAssistEnabled;
+    private volatile bool _aimAssistEnabled;
     private bool _leftUpHeld, _leftDownHeld, _leftLeftHeld, _leftRightHeld;
     private double _rightStickX, _rightStickY;
 
@@ -78,12 +94,16 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _tickTimer.Tick += (_, _) => OnTick();
         _tickTimer.Start();
 
-        _aimAssistTimer = new System.Windows.Forms.Timer { Interval = Math.Max(8, _config.AimAssist.TickIntervalMs) };
-        _aimAssistTimer.Tick += (_, _) => OnAimAssistTick();
-        _aimAssistTimer.Start();
+        // Cheap (no capture/inference) - just reads the latest cached detection and
+        // nudges the mouse. All the heavy work happens on the background detection
+        // loop thread below, deliberately kept off the UI/input-hook thread, which
+        // must stay responsive or real mouse/keyboard input becomes janky and button
+        // suppression/timing becomes unreliable.
+        _pullTimer = new System.Windows.Forms.Timer { Interval = Math.Max(1, _config.AimAssist.PullIntervalMs) };
+        _pullTimer.Tick += (_, _) => OnPullTick();
+        _pullTimer.Start();
 
-        _snapReleaseTimer = new System.Windows.Forms.Timer();
-        _snapReleaseTimer.Tick += (_, _) => CompleteSnapRelease();
+        Task.Run(() => DetectionLoop(_detectionLoopCts.Token));
 
         _enabledMenuItem = new ToolStripMenuItem("Enabled", null, OnToggleEnabled) { Checked = _enabled };
         var reloadItem = new ToolStripMenuItem("Reload mapping", null, (_, _) => LoadConfig());
@@ -115,15 +135,15 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         var json = File.ReadAllText(path);
         _config = JsonSerializer.Deserialize<MappingConfig>(json, JsonOptions) ?? new MappingConfig();
 
-        if (_aimAssistTimer != null)
-            _aimAssistTimer.Interval = Math.Max(8, _config.AimAssist.TickIntervalMs);
+        if (_pullTimer != null)
+            _pullTimer.Interval = Math.Max(1, _config.AimAssist.PullIntervalMs);
 
         _toggleKey = Enum.TryParse<Keys>(_config.ToggleHotkey, ignoreCase: true, out var toggle) ? toggle : Keys.F9;
         _aimAssistToggleKey = Enum.TryParse<Keys>(_config.AimAssist.ToggleHotkey, ignoreCase: true, out var aimToggle) ? aimToggle : Keys.F10;
         _colorProbeKey = Enum.TryParse<Keys>(_config.AimAssist.ProbeHotkey, ignoreCase: true, out var probe) ? probe : Keys.F11;
         _aimAssistEnabled = _config.AimAssist.Enabled;
-        _snapOnReleaseButton = Enum.TryParse<MouseButtons>(_config.AimAssist.SnapOnReleaseButton, ignoreCase: true, out var snapBtn)
-            ? snapBtn
+        _hardLockButton = Enum.TryParse<MouseButtons>(_config.AimAssist.HardLockButton, ignoreCase: true, out var lockBtn)
+            ? lockBtn
             : null;
         _debugCaptureDir = Path.Combine(exeDir, string.IsNullOrWhiteSpace(_config.AimAssist.DebugCaptureDir)
             ? "debug_captures"
@@ -164,7 +184,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     // GPU/driver combo could even hang - this must never run on the UI thread, or the
     // whole app (tray icon, message loop, the ability to Exit at all) freezes solid
     // until Windows itself is rebooted. The actual swap into _poseDetector happens
-    // later, on the UI thread, from OnAimAssistTick - see ApplyPendingPoseSwap.
+    // later, on the UI thread, from OnPullTick - see ApplyPendingPoseSwap.
     private void LoadPoseDetector(string exeDir)
     {
         if (!_config.AimAssist.UsePoseDetection)
@@ -226,16 +246,26 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     }
 
     // Applies a pose-model load/unload that finished on a background thread (see
-    // LoadPoseDetector). Runs on the UI thread only, so the actual Dispose() of the old
-    // session can never race with an in-flight inference call on it.
+    // LoadPoseDetector). Runs on the UI thread only; the actual Dispose() is guarded by
+    // _poseDetectorLock so it can never race with an in-flight inference call on the
+    // background detection loop thread.
     private void ApplyPendingPoseSwap()
     {
         if (!_poseSwapPending)
             return;
 
         _poseSwapPending = false;
-        _poseDetector?.Dispose();
-        _poseDetector = _pendingPoseDetector;
+
+        _poseDetectorLock.EnterWriteLock();
+        try
+        {
+            _poseDetector?.Dispose();
+            _poseDetector = _pendingPoseDetector;
+        }
+        finally
+        {
+            _poseDetectorLock.ExitWriteLock();
+        }
         _pendingPoseDetector = null;
 
         if (_pendingPoseNotice is { } notice)
@@ -260,14 +290,13 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
                || _keyToButton.ContainsKey(key) || _keyToButtonCombo.ContainsKey(key);
     }
 
+    // No aim-assist-specific suppression at all: the hard-lock button's press/release
+    // always passes straight through to the game untouched, at the exact moment the
+    // player presses/releases it - only the mouse gets nudged (continuously, while
+    // held), never the button events themselves. This is what makes the shot moment
+    // fully player-controlled with no extra latency or reordering risk.
     private bool ShouldSuppressMouseButton(MouseButtons button, bool isDown)
     {
-        if (!isDown && _snapReleasePending == null && button == _snapOnReleaseButton
-            && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
-        {
-            return true;
-        }
-
         if (!IsActiveNow() || !_config.BlockPhysicalInputForMappedKeys)
             return false;
 
@@ -354,63 +383,18 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnMouseButton(MouseButtons button, bool pressed)
     {
-        if (pressed && button == _snapOnReleaseButton
-            && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
-        {
-            // Start tracking the marker's position while the bow is drawn, so a
-            // velocity can be estimated for lead prediction at release.
-            _trackingHistory.Clear();
-            _isDrawing = true;
-
-            if (_config.AimAssist.DebugCaptureEnabled)
-            {
-                // Snapshot of what the tool sees the instant the bow-draw button is pressed,
-                // before anything has moved - lets you compare against the "after release"
-                // snapshot below to see exactly what the correction did.
-                CaptureDebugSnapshot("press");
-            }
-        }
-
-        if (!pressed && _snapReleasePending == null && _snapOnReleaseButton == button
-            && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
-        {
-            // The real button-up was suppressed by ShouldSuppressMouseButton - do the
-            // correction now, then hold the actual release until the game has had time
-            // to visually catch up to it, so a big correction doesn't fire the shot
-            // before the camera finishes turning.
-            _isDrawing = false;
-            _snapReleasePending = button;
-            PerformSnapCorrection();
-            _snapReleaseTimer.Interval = Math.Max(1, _config.AimAssist.SnapReleaseDelayMs);
-            _snapReleaseTimer.Start();
-            return;
-        }
+        // Just flips a flag - no capture, no detection, no suppression. The background
+        // detection loop and pull timer pick this up on their own schedules; the real
+        // button event itself is never touched, so the shot always fires exactly when
+        // the player releases, never before or after a correction.
+        if (button == _hardLockButton && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
+            _isDrawing = pressed;
 
         if (pressed && !IsActiveNow())
             return;
 
         if (_mouseButtonToButton.TryGetValue(button, out var buttonName))
             _controller.SetButton(buttonName, pressed);
-    }
-
-    private void CompleteSnapRelease()
-    {
-        _snapReleaseTimer.Stop();
-        if (_snapReleasePending is not { } button)
-            return;
-
-        _snapReleasePending = null;
-
-        if (_config.AimAssist.DebugCaptureEnabled)
-        {
-            // Snapshot taken after the correction move has landed (and the game has had
-            // SnapReleaseDelayMs to visually catch up), right before the shot is allowed
-            // to actually fire - shows where the marker/target ended up relative to the
-            // crosshair after the jump.
-            CaptureDebugSnapshot("release_after");
-        }
-
-        MouseInput.SendButtonUp(button);
     }
 
     private void OnMouseMoveDelta(int dx, int dy)
@@ -450,11 +434,105 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _controller.SetRightStick(outX, outY);
     }
 
-    // Effectively the whole primary screen is searched for the marker, minus a
+    // Cheap: just reads the latest cached detection (published by the background
+    // detection loop) and nudges the mouse toward it. Does its own capture/inference -
+    // never; that all happens on DetectionLoop's background thread.
+    private void OnPullTick()
+    {
+        ApplyPendingPoseSwap();
+
+        if (!_isDrawing || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
+            return;
+
+        Point? target;
+        lock (_detectionLock)
+        {
+            target = _latestDetection?.Point;
+        }
+
+        if (target is not { } point)
+            return;
+
+        GetAimRegion(out var crosshairX, out var crosshairY);
+
+        var dx = point.X - crosshairX;
+        var dy = point.Y - crosshairY;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+
+        if (dist < Math.Max(0, _config.AimAssist.LockDeadZonePx))
+            return;
+
+        var gain = Math.Clamp(_config.AimAssist.LockGain, 0.0, 1.0);
+        var maxStep = Math.Max(1, _config.AimAssist.MaxPullStepPx);
+        var moveX = Math.Clamp((int)Math.Round(dx * gain), -maxStep, maxStep);
+        var moveY = Math.Clamp((int)Math.Round(dy * gain), -maxStep, maxStep);
+
+        MouseInput.MoveRelative(moveX, moveY);
+    }
+
+    // Runs for the lifetime of the app on a background thread, deliberately separate
+    // from the UI/input-hook thread. While the hard-lock button is held, repeatedly
+    // captures the screen and re-detects the target, publishing the latest result for
+    // OnPullTick to read. Never touches the mouse/keyboard hook or the UI message loop
+    // directly - that separation is what keeps input responsive regardless of how
+    // heavy detection is (color-marker or neural pose model).
+    private void DetectionLoop(CancellationToken token)
+    {
+        var wasDrawing = false;
+
+        while (!token.IsCancellationRequested)
+        {
+            if (!_isDrawing || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
+            {
+                if (wasDrawing)
+                {
+                    // Just released - one last informational capture for the debug log
+                    // (never used to move the mouse), so you can see where things ended
+                    // up relative to where the last pull landed.
+                    CaptureAndPublish("release", updateCache: false);
+                }
+
+                wasDrawing = false;
+                lock (_detectionLock)
+                {
+                    _latestDetection = null;
+                }
+
+                Thread.Sleep(50);
+                continue;
+            }
+
+            CaptureAndPublish(wasDrawing ? "hold" : "press", updateCache: true);
+            wasDrawing = true;
+
+            Thread.Sleep(Math.Max(1, _config.AimAssist.DetectionIntervalMs));
+        }
+    }
+
+    private void CaptureAndPublish(string debugLabel, bool updateCache)
+    {
+        var region = GetAimRegion(out var crosshairX, out var crosshairY);
+        using var capture = ScreenCapture.CaptureRegion(region);
+        var detected = DetectAim(capture);
+
+        if (updateCache)
+        {
+            lock (_detectionLock)
+            {
+                _latestDetection = detected is { } d ? (Environment.TickCount64, d.Point) : null;
+            }
+        }
+
+        if (_config.AimAssist.DebugCaptureEnabled)
+            SaveDebugSnapshot(debugLabel, capture, crosshairX, crosshairY, detected?.Marker, detected?.Pose);
+    }
+
+    // Effectively the whole primary screen is searched for the target, minus a
     // configurable band at the top/bottom that's excluded to avoid latching onto
     // screen-anchored HUD elements (health bar, nameplate) instead of the actual
-    // in-world enemy marker. Returns the region to capture plus where the
-    // crosshair sits within it (in the returned region's local coordinates).
+    // in-world target. Returns the region to capture plus where the crosshair sits
+    // within it (in the returned region's local coordinates). Cheap (no capture) -
+    // safe to call from either the UI thread or the background detection loop.
     private Rectangle GetAimRegion(out int crosshairX, out int crosshairY)
     {
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
@@ -481,15 +559,33 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     // (already gives a chest point directly, no further offset needed), otherwise the
     // color-marker path (marker position + ComputeChestOffsetY). Returns null if
     // nothing was detected. Also returns the underlying marker/pose result so callers
-    // can log detailed diagnostics.
+    // can log detailed diagnostics. Safe to call from the background detection loop
+    // thread - _poseDetector access is guarded by _poseDetectorLock.
     private (Point Point, TargetMatch? Marker, PoseMatch? Pose)? DetectAim(Bitmap bitmap)
     {
-        if (_config.AimAssist.UsePoseDetection && _poseDetector != null)
+        if (_config.AimAssist.UsePoseDetection)
         {
-            var pose = _poseDetector.DetectNearestChest(bitmap,
-                _config.AimAssist.PoseConfidenceThreshold, _config.AimAssist.PoseIouThreshold,
-                _config.AimAssist.PoseKeypointConfThreshold, _config.AimAssist.PoseChestHipRatio);
-            return pose is { } p ? (p.ChestPoint, null, p) : null;
+            PoseMatch? pose = null;
+            var haveDetector = false;
+
+            _poseDetectorLock.EnterReadLock();
+            try
+            {
+                if (_poseDetector != null)
+                {
+                    haveDetector = true;
+                    pose = _poseDetector.DetectNearestChest(bitmap,
+                        _config.AimAssist.PoseConfidenceThreshold, _config.AimAssist.PoseIouThreshold,
+                        _config.AimAssist.PoseKeypointConfThreshold, _config.AimAssist.PoseChestHipRatio);
+                }
+            }
+            finally
+            {
+                _poseDetectorLock.ExitReadLock();
+            }
+
+            if (haveDetector)
+                return pose is { } p ? (p.ChestPoint, null, p) : null;
         }
 
         var marker = DetectMarkerFromBitmap(bitmap);
@@ -500,19 +596,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         return (point, marker, null);
     }
 
-    // Captures the current screen fresh, saves it, and logs crosshair/marker/target
-    // coordinates alongside it. Used for the "press" and "release_after" debug events.
-    private void CaptureDebugSnapshot(string label)
-    {
-        var region = GetAimRegion(out var crosshairX, out var crosshairY);
-        using var screenshot = ScreenCapture.CaptureRegion(region);
-        var detected = DetectAim(screenshot);
-        SaveDebugSnapshot(label, screenshot, crosshairX, crosshairY, detected?.Marker, detected?.Pose);
-    }
-
     private void SaveDebugSnapshot(string label, Bitmap screenshot, int crosshairX, int crosshairY,
-        TargetMatch? marker, PoseMatch? pose,
-        (double X, double Y)? predicted = null, (double VxPerMs, double VyPerMs)? velocity = null)
+        TargetMatch? marker, PoseMatch? pose)
     {
         double? targetX = null, targetY = null;
         if (marker is { } match)
@@ -525,9 +610,6 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             targetX = p.ChestPoint.X;
             targetY = p.ChestPoint.Y;
         }
-
-        double? velocityXPerSec = velocity?.VxPerMs * 1000;
-        double? velocityYPerSec = velocity?.VyPerMs * 1000;
 
         DebugCapture.Save(_debugCaptureDir, label, screenshot, new (string, object?)[]
         {
@@ -544,13 +626,6 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             ("PoseBoxHeight", pose?.Box.Height),
             ("TargetX", targetX),
             ("TargetY", targetY),
-            // The lead-predicted aim point actually used for the correction, and the
-            // estimated target velocity (px/sec) behind it - null unless there was
-            // enough tracking history during the draw to predict from.
-            ("PredictedX", predicted?.X),
-            ("PredictedY", predicted?.Y),
-            ("VelocityXPerSec", velocityXPerSec),
-            ("VelocityYPerSec", velocityYPerSec),
         });
     }
 
@@ -568,149 +643,6 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         return Math.Clamp(offset, min, max);
     }
 
-    private void OnAimAssistTick()
-    {
-        ApplyPendingPoseSwap();
-
-        if (_snapOnReleaseButton != null)
-        {
-            // Continuous pull is unused once snap-on-release is configured -
-            // PerformSnapCorrection does its own fresh capture at the moment that
-            // matters instead. But while the bow is drawn, sample the marker's
-            // position (without moving the mouse) so a velocity can be estimated
-            // for lead prediction against a moving target at release.
-            if (_isDrawing && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
-                RecordTrackingSample();
-            return;
-        }
-
-        if (!_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
-            return;
-
-        var region = GetAimRegion(out var crosshairX, out var crosshairY);
-        using var capture = ScreenCapture.CaptureRegion(region);
-        var detected = DetectAim(capture);
-
-        if (detected is not { } result)
-        {
-            _smoothedAimX = null;
-            _smoothedAimY = null;
-            return;
-        }
-
-        var rawAimX = (double)result.Point.X;
-        var rawAimY = (double)result.Point.Y;
-
-        var smoothing = Math.Clamp(_config.AimAssist.Smoothing, 0.0, 0.98);
-        _smoothedAimX = _smoothedAimX is { } sx ? sx * smoothing + rawAimX * (1 - smoothing) : rawAimX;
-        _smoothedAimY = _smoothedAimY is { } sy ? sy * smoothing + rawAimY * (1 - smoothing) : rawAimY;
-
-        var dx = _smoothedAimX.Value - crosshairX;
-        var dy = _smoothedAimY.Value - crosshairY;
-        var dist = Math.Sqrt(dx * dx + dy * dy);
-
-        if (dist < Math.Max(0, _config.AimAssist.DeadZonePx))
-            return;
-
-        int moveX, moveY;
-        if (dist >= Math.Max(1, _config.AimAssist.SnapThresholdPx))
-        {
-            var snapStrength = Math.Clamp(_config.AimAssist.SnapStrength, 0.0, 1.0);
-            moveX = (int)Math.Round(dx * snapStrength);
-            moveY = (int)Math.Round(dy * snapStrength);
-        }
-        else
-        {
-            var strength = Math.Max(0.0, _config.AimAssist.Strength);
-            var maxStep = Math.Max(1, _config.AimAssist.MaxStepPx);
-            moveX = Math.Clamp((int)Math.Round(dx * strength), -maxStep, maxStep);
-            moveY = Math.Clamp((int)Math.Round(dy * strength), -maxStep, maxStep);
-        }
-
-        MouseInput.MoveRelative(moveX, moveY);
-    }
-
-    // Records the current aim point (without moving the mouse) while the bow is
-    // drawn, building a short history used to estimate its on-screen velocity.
-    private void RecordTrackingSample()
-    {
-        var region = GetAimRegion(out _, out _);
-        using var capture = ScreenCapture.CaptureRegion(region);
-        var detected = DetectAim(capture);
-        if (detected is not { } result)
-            return;
-
-        var now = Environment.TickCount64;
-        _trackingHistory.Add((now, result.Point.X, result.Point.Y));
-
-        var cutoff = now - Math.Max(1, _config.AimAssist.TrackingHistoryMs);
-        _trackingHistory.RemoveAll(s => s.TimestampMs < cutoff);
-    }
-
-    // Extrapolates from the oldest retained tracking sample to "now" to estimate
-    // velocity (px/ms), then projects LeadTimeMs further into the future - so the
-    // correction aims where a moving target will be by the time the shot actually
-    // registers, not where it was at the moment of detection. Falls back to the raw
-    // (un-extrapolated) position when there isn't enough tracking history yet, e.g.
-    // a very quick draw-and-release, or the target isn't actually moving.
-    private (double X, double Y, double VxPerMs, double VyPerMs) PredictLeadPosition(double rawX, double rawY, long now)
-    {
-        var leadMs = Math.Max(0, _config.AimAssist.LeadTimeMs);
-        var minSamples = Math.Max(2, _config.AimAssist.MinTrackingSamples);
-
-        if (leadMs == 0 || _trackingHistory.Count < minSamples)
-            return (rawX, rawY, 0, 0);
-
-        var oldest = _trackingHistory[0];
-        var dtMs = now - oldest.TimestampMs;
-        if (dtMs < 16)
-            return (rawX, rawY, 0, 0);
-
-        var vx = (rawX - oldest.X) / dtMs;
-        var vy = (rawY - oldest.Y) / dtMs;
-
-        var maxLead = Math.Max(0, _config.AimAssist.MaxLeadPx);
-        var leadX = Math.Clamp(vx * leadMs, -maxLead, maxLead);
-        var leadY = Math.Clamp(vy * leadMs, -maxLead, maxLead);
-
-        return (rawX + leadX, rawY + leadY, vx, vy);
-    }
-
-    private void PerformSnapCorrection()
-    {
-        var region = GetAimRegion(out var crosshairX, out var crosshairY);
-        using var screenshot = ScreenCapture.CaptureRegion(region);
-        var detected = DetectAim(screenshot);
-
-        if (detected is not { } result)
-        {
-            if (_config.AimAssist.DebugCaptureEnabled)
-                SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, null, null);
-            return;
-        }
-
-        var rawX = (double)result.Point.X;
-        var rawY = (double)result.Point.Y;
-        var now = Environment.TickCount64;
-
-        var (aimX, aimY, vx, vy) = PredictLeadPosition(rawX, rawY, now);
-
-        if (_config.AimAssist.DebugCaptureEnabled)
-        {
-            // Snapshot of the screen, the raw detection, and the lead-predicted target
-            // the instant before the mouse is moved, i.e. what the correction is about
-            // to do and why (velocity-based prediction, if any was applied).
-            SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY,
-                result.Marker, result.Pose, (aimX, aimY), (vx, vy));
-        }
-
-        var dx = aimX - crosshairX;
-        var dy = aimY - crosshairY;
-
-        var gain = Math.Max(0.0, _config.AimAssist.SnapGain);
-        MouseInput.MoveRelative((int)Math.Round(dx * gain), (int)Math.Round(dy * gain));
-    }
-
     private void OnToggleEnabled(object? sender, EventArgs e) => ToggleEnabled();
 
     private void ToggleEnabled()
@@ -726,21 +658,21 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             _controller.SetLeftStick(0, 0);
             _controller.SetRightStick(0, 0);
             _isDrawing = false;
-            _trackingHistory.Clear();
-            CompleteSnapRelease();
         }
     }
 
     private void ExitApp()
     {
         _tickTimer.Stop();
-        _aimAssistTimer.Stop();
-        CompleteSnapRelease();
+        _pullTimer.Stop();
+        _detectionLoopCts.Cancel();
         _hooks.Dispose();
         _controller.Dispose();
         _overlay.Dispose();
         _poseDetector?.Dispose();
         _pendingPoseDetector?.Dispose();
+        _poseDetectorLock.Dispose();
+        _detectionLoopCts.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();

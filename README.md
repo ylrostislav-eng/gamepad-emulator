@@ -83,33 +83,37 @@ meant for testing hit/damage registration on your own local build, not for
 playing against other people.
 
 - Continuously knows the crosshair's screen coordinates (screen center +
-  `CenterOffsetX/Y`), and searches effectively the whole primary screen for a
-  configurable target color (an enemy marker, health bar, etc), minus a
-  configurable band excluded at the top/bottom (`IgnoreTopPx`/`IgnoreBottomPx`)
-  to avoid latching onto screen-anchored HUD elements (health/stamina bar,
-  nameplate) instead of the actual in-world marker.
-- When `SnapOnReleaseButton` is set (e.g. `"Left"`), the aim isn't pulled
-  continuously — the real button-up is held back, the mouse jumps once,
-  instantly, to the computed target the moment you release the button, and
-  the real release is then let through after `SnapReleaseDelayMs` so the
-  game's camera has time to visually catch up before the shot fires.
+  `CenterOffsetX/Y`), and searches effectively the whole primary screen for the
+  target, minus a configurable band excluded at the top/bottom
+  (`IgnoreTopPx`/`IgnoreBottomPx`) to avoid latching onto screen-anchored HUD
+  elements (health/stamina bar, nameplate) instead of the actual in-world target.
+- While `HardLockButton` is held (e.g. `"Left"`, the bow-draw button), the aim
+  is continuously pulled ("hard-locked") onto the detected target every
+  `PullIntervalMs` - you choose the exact moment to release, at your own
+  timing. The real button press/release always passes straight through to
+  the game completely untouched, with no suppression or delay - the shot
+  fires exactly when you let go, wherever the aim happens to be at that instant.
+- **Detection runs on a dedicated background thread**, entirely separate from
+  the mouse/keyboard hook thread, capturing and re-detecting the target every
+  `DetectionIntervalMs`. This separation matters: capture + detection
+  (especially the pose model) is too heavy to run on the same thread that
+  processes your real mouse/keyboard input without making it janky, and if it
+  ever ran directly inside the hook callback, a slow detection could make
+  Windows' low-level-hook timeout kick in and cause your button press/release
+  to reach the game out of order. The UI-thread pull timer (`PullIntervalMs`)
+  only ever reads the latest cached detection and nudges the mouse - it never
+  captures or runs detection itself.
 - The vertical offset from the marker down to the chest is a fixed pixel
   count, `ChestOffsetY` (calibrated from real screenshots, ~165px at
-  2560x1440). An earlier version tried to auto-scale this from the marker's
-  own measured on-screen size, but testing showed the marker is a
-  fixed-screen-size HUD icon whose apparent size does **not** track distance
-  — so there was no usable signal there. `UseMarkerHeightScaling` +
+  2560x1440) - only used by the color-marker path; pose detection (below)
+  computes the chest point directly and ignores this. An earlier version
+  tried to auto-scale this from the marker's own measured on-screen size, but
+  testing showed the marker is a fixed-screen-size HUD icon whose apparent
+  size does **not** track distance - `UseMarkerHeightScaling` +
   `ChestOffsetMarkerRatio` are left in, off by default, in case a
   differently-implemented marker does scale with distance.
 - `MinChestOffsetY`/`MaxChestOffsetY` clamp the final offset either way, as a
   safety net against one bad reading producing a wild correction.
-- While the bow is drawn (button held), the marker's position is sampled
-  every tick (without moving the mouse) to estimate its on-screen velocity.
-  At release, the aim point is extrapolated `LeadTimeMs` further into the
-  future instead of using the marker's last-seen (by then stale) position —
-  so a moving/fighting target gets led, not shot at where it used to be.
-  Only kicks in once at least `MinTrackingSamples` were gathered during the
-  draw; a very quick draw-and-release falls back to the raw position.
 - Toggled independently of the remap with `F10`; `F11` reads the color under
   the mouse cursor into a tray balloon tip, so you can hover the enemy
   marker in-game and copy the exact `ColorR/G/B` into `mapping.json`.
@@ -127,13 +131,12 @@ playing against other people.
   "MaxChestOffsetY": 280,
   "IgnoreTopPx": 110,
   "IgnoreBottomPx": 170,
-  "SnapOnReleaseButton": "Left",
-  "SnapGain": 0.5,
-  "SnapReleaseDelayMs": 90,
-  "LeadTimeMs": 150,
-  "MaxLeadPx": 180,
-  "TrackingHistoryMs": 400,
-  "MinTrackingSamples": 2,
+  "HardLockButton": "Left",
+  "LockGain": 0.4,
+  "LockDeadZonePx": 6,
+  "MaxPullStepPx": 70,
+  "PullIntervalMs": 16,
+  "DetectionIntervalMs": 33,
   "UsePoseDetection": true,
   "PoseModelPath": "Models/yolov8n-pose.onnx",
   "PoseConfidenceThreshold": 0.4,
@@ -145,32 +148,34 @@ playing against other people.
 }
 ```
 
-Tuning knobs for the snap-on-release mode:
+Tuning knobs for the hard-lock:
+- `LockGain` — fraction of the remaining distance to the target closed on
+  each pull tick. This plays the same role `SnapGain` did in an earlier,
+  one-shot version of this tool: it's also your calibration for the game's
+  actual mouse-to-camera-turn sensitivity, which is rarely 1:1. If the lock
+  overshoots/oscillates around the target, lower it (e.g. `0.25`); if it
+  visibly lags behind or never quite settles, raise it. Because this now
+  applies every `PullIntervalMs` (not once), even a slightly too-high value
+  tends to just wobble down to the target fast rather than fly past it
+  outright - but very high values (close to `1.0`) can still oscillate.
 - `ChestOffsetY` — vertical pixel gap from the marker down to the chest, at
-  your resolution. Use the debug-capture screenshots (below) to measure it
-  precisely: pick a shot, measure the marker-to-chest gap in the PNG, and set
-  this to that value.
-- `SnapGain` — calibration multiplier for the computed pixel offset. If the
-  snap overshoots past the target, lower it (e.g. `0.25`); if it falls
-  short, raise it. Tune one direction at a time.
-- `SnapReleaseDelayMs` — how long (ms) the real button release is held back
-  after the jump, giving the game's camera time to finish turning before the
-  shot registers. Raise it if big corrections still land short.
-- `LeadTimeMs` — how far ahead (ms) a moving target is led, roughly the total
-  latency from detection to the shot actually registering (capture/detect
-  overhead + `SnapReleaseDelayMs`). If shots against a moving/fighting enemy
-  consistently land behind it, raise this; if they now land ahead of it
-  (over-leading), lower it. `0` disables prediction (shoots at the raw
-  last-seen position, like before).
-- `MaxLeadPx` — hard cap on how far prediction may shift the aim, protecting
-  against a noisy velocity estimate (e.g. the marker briefly jumping to a
-  different blob) producing a wild extrapolated aim.
-- `IgnoreTopPx`/`IgnoreBottomPx` — if a shot's debug log shows `MarkerFound`
-  at a position that doesn't move between `press`/`release_before`/
-  `release_after` even though the camera turned, that's almost always a
-  screen-anchored HUD element being mistaken for the marker, not the marker
-  itself — increase the matching margin to exclude it, or narrow
-  `ColorTolerance` and re-probe the marker's exact color with `F11`.
+  your resolution (color-marker mode only). Use the debug-capture screenshots
+  (below) to measure it precisely.
+- `LockDeadZonePx` — stop nudging once within this many pixels of the
+  target, to avoid buzzing/micro-jitter once locked on instead of chasing
+  detection noise.
+- `MaxPullStepPx` — hard per-tick cap, protecting against a single bad/noisy
+  detection causing a visible jerk.
+- `PullIntervalMs`/`DetectionIntervalMs` — how often the mouse is nudged vs.
+  how often the (heavier) capture+detection re-runs on the background thread.
+  Keep `PullIntervalMs` fast (16ms) for smoothness; raise `DetectionIntervalMs`
+  if the background thread can't keep up (e.g. slow GPU/CPU for the pose
+  model) rather than touching `PullIntervalMs`.
+- `IgnoreTopPx`/`IgnoreBottomPx` — if a debug-log row shows `MarkerFound` at a
+  position that doesn't move across consecutive `hold` rows even though the
+  camera is turning, that's almost always a screen-anchored HUD element being
+  mistaken for the marker - increase the matching margin to exclude it, or
+  narrow `ColorTolerance` and re-probe the marker's exact color with `F11`.
 
 If the game runs in exclusive fullscreen, screen capture may not work;
 switch it to windowed/borderless for testing.
@@ -186,8 +191,8 @@ other red HUD elements being mistaken for it (there's nothing color-specific
 to confuse it), and a detected silhouette's size actually does track
 distance, unlike the marker (a fixed-screen-size icon — see
 `UseMarkerHeightScaling` above). It reuses the exact same downstream pipeline
-as the marker path (crosshair math, snap-on-release, velocity/lead
-prediction) — only where the aim point comes from changes.
+as the marker path (crosshair math, hard-lock pull, background detection
+loop) — only where the aim point comes from changes.
 
 - Runs on GPU via DirectML if available (NVIDIA/AMD/Intel, through the
   normal graphics driver — no separate CUDA/cuDNN install needed), falling
@@ -221,38 +226,36 @@ enough for your testing.
 
 ### Debug capture (screenshots + coordinate log for each shot)
 
-When `DebugCaptureEnabled: true`, the app writes into `DebugCaptureDir`
-(next to the exe, default `debug_captures/`) for every shot:
+When `DebugCaptureEnabled: true`, the background detection loop (never the
+UI/input-hook thread) writes into `DebugCaptureDir` (next to the exe,
+default `debug_captures/`) on its own schedule while `HardLockButton` is held:
 
-- `<timestamp>_press.png` + a `press` row — taken the instant you press the
-  button, before anything moves.
-- `<timestamp>_release_before.png` + a `release_before` row — taken right
-  before the mouse jumps, at the moment you release the button.
-- `<timestamp>_release_after.png` + a `release_after` row — taken after the
-  jump has landed (once the camera has had `SnapReleaseDelayMs` to catch
-  up), right before the real button-up (the shot) is let through.
+- One `<timestamp>_press.png` + a `press` row for the first sample right
+  after you press the button.
+- One `<timestamp>_hold.png` + a `hold` row for every subsequent detection
+  cycle (every `DetectionIntervalMs`) while still held - so you get the
+  whole trajectory of what the tool saw during the draw, not just the ends.
+- One `<timestamp>_release.png` + a `release` row for one last, purely
+  informational capture right after you let go (never used to move the
+  mouse - just shows where things ended up).
 
-All three rows go into a single `log.csv` in that folder, with columns:
+All rows go into a single `log.csv` in that folder, with columns:
 `Timestamp, Label, Screenshot, Mode, CrosshairX, CrosshairY, MarkerFound,
 MarkerX, MarkerY, MarkerHeight, PoseFound, PoseConfidence, PoseBoxWidth,
-PoseBoxHeight, TargetX, TargetY, PredictedX, PredictedY, VelocityXPerSec,
-VelocityYPerSec`:
+PoseBoxHeight, TargetX, TargetY`:
 - `Mode` — `"Pose"` or `"ColorMarker"`, whichever actually ran for that row
   (lets you tell at a glance whether pose detection was active or had fallen
   back).
 - `MarkerX/Y/Height` are populated only in `ColorMarker` mode; `PoseFound`,
   `PoseConfidence`, `PoseBoxWidth/Height` only in `Pose` mode.
-- `TargetX/Y` is the raw detected aim point (marker+chest-offset, or the
-  pose model's chest estimate); `PredictedX/Y` is the lead-predicted point
-  actually used for the correction (only set on `release_before`, and only
-  once there was enough tracking history — see `LeadTimeMs` above);
-  `VelocityXPerSec/YPerSec` is the estimated target speed behind that
-  prediction.
+- `TargetX/Y` is the detected aim point (marker+chest-offset, or the pose
+  model's chest estimate) - this is what the pull timer was nudging toward
+  around that time.
 - `Screenshot` is the matching PNG filename in the same folder.
 
-Turn this off (`DebugCaptureEnabled: false`) once you're done tuning — it
-captures and saves a full-screen PNG on every shot, which costs disk space
-and a bit of CPU per shot.
+Turn this off (`DebugCaptureEnabled: false`) once you're done tuning — with
+a whole shot's worth of `hold` rows now saved instead of just two, it adds
+up in disk space and background-thread work fast.
 
 ## Project layout
 

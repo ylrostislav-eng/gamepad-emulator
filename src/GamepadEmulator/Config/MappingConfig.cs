@@ -83,84 +83,44 @@ public sealed class AimAssistConfig
     public int IgnoreBottomPx { get; set; } = 170;
 
     public int PixelStep { get; set; } = 2;
-    public double Strength { get; set; } = 0.15;
     public bool ShowOverlay { get; set; } = true;
-
-    // 0 = no smoothing (raw, jittery), closer to 1 = heavier smoothing (laggier but steadier).
-    public double Smoothing { get; set; } = 0.65;
-
-    // How often (ms) to capture + correct. Lower = snappier but more prone to
-    // overshoot oscillation if the game's camera can't visually keep up; if the
-    // aim wobbles back and forth along one line, raise this before touching Strength.
-    public int TickIntervalMs { get; set; } = 80;
-
-    // Hard cap on pixels moved in a single tick, regardless of Strength - a safety
-    // net against a single correction being big enough to itself cause overshoot.
-    public int MaxStepPx { get; set; } = 90;
-
-    // Extra pull multiplier applied as the target drifts toward the edge of the
-    // detection circle (1 = no extra pull at the edge, i.e. same as at center).
-    // Gives a strong "snap back" when strafing pushes the target off-center while
-    // staying gentle near the center where oscillation would otherwise start.
-    public double EdgeGainMultiplier { get; set; } = 3.0;
 
     // Manual nudge for where the crosshair actually sits, if it isn't exact screen center
     // (e.g. residual offset from display scaling). Positive Y = crosshair is below center.
     public int CenterOffsetX { get; set; } = 0;
     public int CenterOffsetY { get; set; } = 0;
 
-    // If the (smoothed) target is already within this many pixels of the crosshair,
-    // don't move the mouse at all - kills small residual wobble/idle-animation sway
-    // instead of chasing it back and forth.
-    public int DeadZonePx { get; set; } = 12;
+    // Mouse button name (Left/Right/Middle). While held, the aim is continuously pulled
+    // onto the detected target (a hard lock, not a one-time snap) - release whenever
+    // you want to shoot, at your own timing; the real release always passes straight
+    // through immediately, with no suppression or delay. Empty = aim-assist off.
+    public string HardLockButton { get; set; } = "Left";
 
-    // Beyond this distance (px), do one decisive near-full correction instead of the
-    // gentle Strength-scaled one - recovers fast from being knocked off-target (e.g.
-    // by strafing) without needing continuous high-gain correction near the center,
-    // which is what was causing the oscillation.
-    public int SnapThresholdPx { get; set; } = 130;
-    public double SnapStrength { get; set; } = 0.9;
+    // Fraction of the remaining distance to the target closed per pull tick while
+    // locked on. Higher snaps onto the target faster/harder; lower feels smoother but
+    // takes longer to fully settle. 1.0 = jump straight onto it every tick.
+    public double LockGain { get; set; } = 0.4;
 
-    // Mouse button name (Left/Right/Middle). When set, the aim isn't pulled
-    // continuously at all - it only snaps once, right when this button is
-    // released (e.g. releasing LMB to fire an arrow). Empty = continuous pull
-    // (the Strength/Smoothing/etc knobs above) instead.
-    public string SnapOnReleaseButton { get; set; } = "";
+    // If already within this many pixels of the target, don't move the mouse at all -
+    // kills micro-jitter once locked on instead of chasing tiny sensor noise.
+    public int LockDeadZonePx { get; set; } = 6;
 
-    // Calibration multiplier for the release snap ONLY: raw on-screen pixel offset
-    // to target is multiplied by this before being sent as a mouse move. 1.0 assumes
-    // 1 injected pixel = 1 screen pixel of camera turn, which is rarely true - the
-    // game's mouse sensitivity scales it. If the snap flies past the target, lower
-    // this (e.g. 0.3); if it falls short, raise it. Tune in one direction at a time.
-    public double SnapGain { get; set; } = 0.5;
+    // Hard cap (px) on how far the mouse can move in a single pull tick - a safety net
+    // against a single bad/noisy detection causing a wild jerk.
+    public int MaxPullStepPx { get; set; } = 70;
 
-    // Holds the actual button release for this many ms after the correction move,
-    // so the game's own camera-turn-rate cap has time to fully catch up to a large
-    // correction before the shot is allowed to register - fixes big corrections
-    // landing short because the shot fired before the camera finished turning.
-    public int SnapReleaseDelayMs { get; set; } = 90;
+    // How often (ms) the mouse is nudged toward the latest cached detection while
+    // locked on. This runs on the UI thread but does no capture/inference itself (just
+    // reads what the background detection loop last found) - keep this fast for a
+    // smooth feel; it's cheap.
+    public int PullIntervalMs { get; set; } = 16;
 
-    // While the bow is drawn (button held), the marker's position is sampled every
-    // tick (without moving the mouse) to estimate its on-screen velocity. At
-    // release, the aim point is extrapolated LeadTimeMs further into the future -
-    // roughly the total latency until the shot actually registers (capture+detect
-    // overhead plus SnapReleaseDelayMs) - so a moving target is led instead of shot
-    // at its last-seen (by then stale) position. 0 disables prediction entirely.
-    public int LeadTimeMs { get; set; } = 150;
-
-    // Hard cap (px) on how far the lead prediction may shift the aim point, in
-    // either direction - guards against a noisy velocity estimate (e.g. the marker
-    // briefly jumping to a different blob) producing a wild extrapolated aim.
-    public int MaxLeadPx { get; set; } = 180;
-
-    // How far back (ms) tracking samples are kept for the velocity estimate. Older
-    // samples are dropped so the estimate reflects recent movement, not the whole draw.
-    public int TrackingHistoryMs { get; set; } = 400;
-
-    // Minimum tracking samples required before prediction kicks in; below this, the
-    // raw (un-predicted) detection is used - e.g. for a very quick draw-and-release
-    // there wasn't time to gather enough samples for a reliable velocity estimate.
-    public int MinTrackingSamples { get; set; } = 2;
+    // How often (ms) the background thread re-captures the screen and re-detects the
+    // target while locked on. This is the (heavier) detection rate, deliberately
+    // decoupled from PullIntervalMs and run off the UI/input-hook thread entirely -
+    // capture+detection must never block mouse/keyboard hook processing, or real input
+    // becomes jerky and button suppression/timing becomes unreliable.
+    public int DetectionIntervalMs { get; set; } = 33;
 
     // When true, aim at a person detected directly from pixels (pretrained YOLOv8-pose
     // model, chest estimated from shoulder/hip keypoints) instead of the color-matched
@@ -190,10 +150,9 @@ public sealed class AimAssistConfig
     // hips). Tune from debug-capture screenshots the same way as ChestOffsetY.
     public double PoseChestHipRatio { get; set; } = 0.35;
 
-    // When true, saves a screenshot + logs crosshair/marker/target coordinates on
-    // every LMB press, and again right after the release-snap correction moves the
-    // mouse - so you can verify after the fact exactly what the tool saw and where
-    // it decided to jump, for each shot.
+    // When true, saves a screenshot + logs crosshair/target coordinates on every LMB
+    // press and release - so you can verify after the fact exactly what the tool saw
+    // and where it was pulling toward, for each shot.
     public bool DebugCaptureEnabled { get; set; } = false;
 
     // Folder (relative to the exe) where debug screenshots and log.csv are written.
