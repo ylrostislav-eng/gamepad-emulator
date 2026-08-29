@@ -21,7 +21,7 @@ public sealed class LowLevelHooks : IDisposable
     public event Action<int, int>? MouseMoveDelta;
 
     public Func<Keys, bool>? SuppressKey;
-    public Func<MouseButtons, bool>? SuppressMouseButton;
+    public Func<MouseButtons, bool, bool>? SuppressMouseButton;
 
     public LowLevelHooks()
     {
@@ -92,7 +92,7 @@ public sealed class LowLevelHooks : IDisposable
             }
 
             var button = MessageToButton(msg);
-            if (button != MouseButtons.None)
+            if (button != MouseButtons.None && (data.flags & NativeMethods.LLMHF_INJECTED) == 0)
             {
                 var isDown = msg is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_MBUTTONDOWN;
                 if (isDown)
@@ -100,7 +100,7 @@ public sealed class LowLevelHooks : IDisposable
                 else
                     MouseButtonUp?.Invoke(button);
 
-                if (SuppressMouseButton?.Invoke(button) ?? false)
+                if (SuppressMouseButton?.Invoke(button, isDown) ?? false)
                     return (IntPtr)1;
             }
         }

@@ -26,6 +26,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly LowLevelHooks _hooks;
     private readonly System.Windows.Forms.Timer _tickTimer;
     private readonly System.Windows.Forms.Timer _aimAssistTimer;
+    private readonly System.Windows.Forms.Timer _snapReleaseTimer;
     private readonly VirtualXbox360Controller _controller;
     private readonly AimOverlayForm _overlay;
 
@@ -39,6 +40,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private Keys _leftUp, _leftDown, _leftLeft, _leftRight;
     private double? _smoothedAimX, _smoothedAimY;
     private MouseButtons? _snapOnReleaseButton;
+    private MouseButtons? _snapReleasePending;
 
     private bool _enabled = true;
     private bool _aimAssistEnabled;
@@ -69,6 +71,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _aimAssistTimer = new System.Windows.Forms.Timer { Interval = Math.Max(8, _config.AimAssist.TickIntervalMs) };
         _aimAssistTimer.Tick += (_, _) => OnAimAssistTick();
         _aimAssistTimer.Start();
+
+        _snapReleaseTimer = new System.Windows.Forms.Timer();
+        _snapReleaseTimer.Tick += (_, _) => CompleteSnapRelease();
 
         _enabledMenuItem = new ToolStripMenuItem("Enabled", null, OnToggleEnabled) { Checked = _enabled };
         var reloadItem = new ToolStripMenuItem("Reload mapping", null, (_, _) => LoadConfig());
@@ -153,8 +158,14 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
                || _keyToButton.ContainsKey(key) || _keyToButtonCombo.ContainsKey(key);
     }
 
-    private bool ShouldSuppressMouseButton(MouseButtons button)
+    private bool ShouldSuppressMouseButton(MouseButtons button, bool isDown)
     {
+        if (!isDown && _snapReleasePending == null && button == _snapOnReleaseButton
+            && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
+        {
+            return true;
+        }
+
         if (!IsActiveNow() || !_config.BlockPhysicalInputForMappedKeys)
             return false;
 
@@ -241,10 +252,18 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnMouseButton(MouseButtons button, bool pressed)
     {
-        if (!pressed && _snapOnReleaseButton == button
+        if (!pressed && _snapReleasePending == null && _snapOnReleaseButton == button
             && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
         {
+            // The real button-up was suppressed by ShouldSuppressMouseButton - do the
+            // correction now, then hold the actual release until the game has had time
+            // to visually catch up to it, so a big correction doesn't fire the shot
+            // before the camera finishes turning.
+            _snapReleasePending = button;
             PerformSnapCorrection();
+            _snapReleaseTimer.Interval = Math.Max(1, _config.AimAssist.SnapReleaseDelayMs);
+            _snapReleaseTimer.Start();
+            return;
         }
 
         if (pressed && !IsActiveNow())
@@ -252,6 +271,16 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
         if (_mouseButtonToButton.TryGetValue(button, out var buttonName))
             _controller.SetButton(buttonName, pressed);
+    }
+
+    private void CompleteSnapRelease()
+    {
+        _snapReleaseTimer.Stop();
+        if (_snapReleasePending is not { } button)
+            return;
+
+        _snapReleasePending = null;
+        MouseInput.SendButtonUp(button);
     }
 
     private void OnMouseMoveDelta(int dx, int dy)
@@ -416,6 +445,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             _rightStickX = _rightStickY = 0;
             _controller.SetLeftStick(0, 0);
             _controller.SetRightStick(0, 0);
+            CompleteSnapRelease();
         }
     }
 
@@ -423,6 +453,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     {
         _tickTimer.Stop();
         _aimAssistTimer.Stop();
+        CompleteSnapRelease();
         _hooks.Dispose();
         _controller.Dispose();
         _overlay.Dispose();

@@ -75,6 +75,9 @@ internal static class NativeMethods
 
     public const uint INPUT_MOUSE = 0;
     public const uint MOUSEEVENTF_MOVE = 0x0001;
+    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MOUSEINPUT

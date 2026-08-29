@@ -102,4 +102,10 @@ public sealed class AimAssistConfig
     // game's mouse sensitivity scales it. If the snap flies past the target, lower
     // this (e.g. 0.3); if it falls short, raise it. Tune in one direction at a time.
     public double SnapGain { get; set; } = 0.35;
+
+    // Holds the actual button release for this many ms after the correction move,
+    // so the game's own camera-turn-rate cap has time to fully catch up to a large
+    // correction before the shot is allowed to register - fixes big corrections
+    // landing short because the shot fired before the camera finished turning.
+    public int SnapReleaseDelayMs { get; set; } = 90;
 }
