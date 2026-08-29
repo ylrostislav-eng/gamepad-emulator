@@ -82,14 +82,20 @@ Separate from the gamepad remap above: a screen-capture based aim helper
 meant for testing hit/damage registration on your own local build, not for
 playing against other people.
 
-- Watches a circular region around the crosshair for a configurable target
-  color (an enemy marker, health bar, etc).
-- When a match is inside that circle, nudges the real mouse cursor (via
-  `SendInput`, so it affects raw-input camera look the same as a physical
-  mouse) toward the match, offset down by `ChestOffsetY` pixels to land on
-  the body instead of the marker itself.
-- Draws a green circle overlay on screen showing the detection radius while
-  active.
+- Continuously knows the crosshair's screen coordinates (screen center +
+  `CenterOffsetX/Y`), and searches the **entire** primary screen for a
+  configurable target color (an enemy marker, health bar, etc) — no fixed
+  detection radius.
+- When `SnapOnReleaseButton` is set (e.g. `"Left"`), the aim isn't pulled
+  continuously — the real button-up is held back, the mouse jumps once,
+  instantly, to the computed target the moment you release the button, and
+  the real release is then let through after `SnapReleaseDelayMs` so the
+  game's camera has time to visually catch up before the shot fires.
+- The vertical offset from the marker down to the chest is **auto-calculated**
+  from the marker's own measured on-screen size (`ChestOffsetMarkerRatio x
+  detected marker height`), so it scales automatically with distance instead
+  of using one fixed pixel count. `ChestOffsetY` is only a fallback for when
+  the marker blob is too small/noisy to measure.
 - Toggled independently of the remap with `F10`; `F11` reads the color under
   the mouse cursor into a tray balloon tip, so you can hover the enemy
   marker in-game and copy the exact `ColorR/G/B` into `mapping.json`.
@@ -101,17 +107,48 @@ playing against other people.
   "ProbeHotkey": "F11",
   "ColorR": 220, "ColorG": 30, "ColorB": 30,
   "ColorTolerance": 35,
-  "DetectionRadius": 220,
   "ChestOffsetY": 90,
-  "Strength": 0.15,
-  "ShowOverlay": true
+  "ChestOffsetMarkerRatio": 3.5,
+  "SnapOnReleaseButton": "Left",
+  "SnapGain": 0.35,
+  "SnapReleaseDelayMs": 90,
+  "DebugCaptureEnabled": true,
+  "DebugCaptureDir": "debug_captures"
 }
 ```
 
-`Strength` is the fraction of the remaining distance closed per tick (~30
-times/sec) — higher snaps harder, lower feels like a gentle pull. If the
-game runs in exclusive fullscreen, screen capture may not work; switch it to
-windowed/borderless for testing.
+Tuning knobs for the snap-on-release mode:
+- `SnapGain` — calibration multiplier for the computed pixel offset. If the
+  snap overshoots past the target, lower it (e.g. `0.25`); if it falls
+  short, raise it. Tune one direction at a time.
+- `SnapReleaseDelayMs` — how long (ms) the real button release is held back
+  after the jump, giving the game's camera time to finish turning before the
+  shot registers. Raise it if big corrections still land short.
+
+If the game runs in exclusive fullscreen, screen capture may not work;
+switch it to windowed/borderless for testing.
+
+### Debug capture (screenshots + coordinate log for each shot)
+
+When `DebugCaptureEnabled: true`, the app writes into `DebugCaptureDir`
+(next to the exe, default `debug_captures/`) for every shot:
+
+- `<timestamp>_press.png` + a `press` row — taken the instant you press the
+  button, before anything moves.
+- `<timestamp>_release_before.png` + a `release_before` row — taken right
+  before the mouse jumps, at the moment you release the button.
+- `<timestamp>_release_after.png` + a `release_after` row — taken after the
+  jump has landed (once the camera has had `SnapReleaseDelayMs` to catch
+  up), right before the real button-up (the shot) is let through.
+
+All three rows go into a single `log.csv` in that folder, with columns:
+`Timestamp, Label, Screenshot, CrosshairX, CrosshairY, MarkerFound, MarkerX,
+MarkerY, MarkerHeight, TargetX, TargetY` — `TargetX/Y` is the computed
+chest-aim point (marker position + the auto-calculated chest offset), and
+`Screenshot` is the matching PNG filename in the same folder. Turn this off
+(`DebugCaptureEnabled: false`) once you're done tuning — it captures and
+saves a full-screen PNG on every shot, which costs disk space and a bit of
+CPU per shot.
 
 ## Project layout
 

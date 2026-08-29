@@ -115,4 +115,13 @@ public sealed class AimAssistConfig
     // correction before the shot is allowed to register - fixes big corrections
     // landing short because the shot fired before the camera finished turning.
     public int SnapReleaseDelayMs { get; set; } = 90;
+
+    // When true, saves a screenshot + logs crosshair/marker/target coordinates on
+    // every LMB press, and again right after the release-snap correction moves the
+    // mouse - so you can verify after the fact exactly what the tool saw and where
+    // it decided to jump, for each shot.
+    public bool DebugCaptureEnabled { get; set; } = false;
+
+    // Folder (relative to the exe) where debug screenshots and log.csv are written.
+    public string DebugCaptureDir { get; set; } = "debug_captures";
 }

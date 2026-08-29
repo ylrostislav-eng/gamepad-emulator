@@ -46,6 +46,9 @@
     "SnapStrength": 0.9,
     "SnapOnReleaseButton": "Left",
     "SnapGain": 0.35,
-    "SnapReleaseDelayMs": 90
+    "SnapReleaseDelayMs": 90,
+
+    "DebugCaptureEnabled": true,
+    "DebugCaptureDir": "debug_captures"
   }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using GamepadEmulator.Config;
+using GamepadEmulator.Debugging;
 using GamepadEmulator.Input;
 using GamepadEmulator.Virtual;
 using GamepadEmulator.Vision;
@@ -41,6 +42,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private double? _smoothedAimX, _smoothedAimY;
     private MouseButtons? _snapOnReleaseButton;
     private MouseButtons? _snapReleasePending;
+    private string _debugCaptureDir = "";
 
     private bool _enabled = true;
     private bool _aimAssistEnabled;
@@ -115,6 +117,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _snapOnReleaseButton = Enum.TryParse<MouseButtons>(_config.AimAssist.SnapOnReleaseButton, ignoreCase: true, out var snapBtn)
             ? snapBtn
             : null;
+        _debugCaptureDir = Path.Combine(exeDir, string.IsNullOrWhiteSpace(_config.AimAssist.DebugCaptureDir)
+            ? "debug_captures"
+            : _config.AimAssist.DebugCaptureDir);
 
         _leftUp = ParseKey(_config.LeftStick.Up, Keys.W);
         _leftDown = ParseKey(_config.LeftStick.Down, Keys.S);
@@ -252,6 +257,15 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnMouseButton(MouseButtons button, bool pressed)
     {
+        if (pressed && button == _snapOnReleaseButton && _config.AimAssist.DebugCaptureEnabled
+            && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
+        {
+            // Snapshot of what the tool sees the instant the bow-draw button is pressed,
+            // before anything has moved - lets you compare against the "after release"
+            // snapshot below to see exactly what the correction did.
+            CaptureDebugSnapshot("press");
+        }
+
         if (!pressed && _snapReleasePending == null && _snapOnReleaseButton == button
             && _aimAssistEnabled && _config.AimAssist.Enabled && IsActiveNow())
         {
@@ -280,6 +294,16 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             return;
 
         _snapReleasePending = null;
+
+        if (_config.AimAssist.DebugCaptureEnabled)
+        {
+            // Snapshot taken after the correction move has landed (and the game has had
+            // SnapReleaseDelayMs to visually catch up), right before the shot is allowed
+            // to actually fire - shows where the marker/target ended up relative to the
+            // crosshair after the jump.
+            CaptureDebugSnapshot("release_after");
+        }
+
         MouseInput.SendButtonUp(button);
     }
 
@@ -333,10 +357,47 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private TargetMatch? DetectMarker(Rectangle region)
     {
         using var capture = ScreenCapture.CaptureRegion(region);
+        return DetectMarkerFromBitmap(capture);
+    }
+
+    private TargetMatch? DetectMarkerFromBitmap(Bitmap bitmap)
+    {
         var targetColor = System.Drawing.Color.FromArgb(
             _config.AimAssist.ColorR, _config.AimAssist.ColorG, _config.AimAssist.ColorB);
         return TargetDetector.FindNearestMatch(
-            capture, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
+            bitmap, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
+    }
+
+    // Captures the current screen fresh, saves it, and logs crosshair/marker/target
+    // coordinates alongside it. Used for the "press" and "release_after" debug events.
+    private void CaptureDebugSnapshot(string label)
+    {
+        var region = GetAimRegion(out var crosshairX, out var crosshairY);
+        using var screenshot = ScreenCapture.CaptureRegion(region);
+        var marker = DetectMarkerFromBitmap(screenshot);
+        SaveDebugSnapshot(label, screenshot, crosshairX, crosshairY, marker);
+    }
+
+    private void SaveDebugSnapshot(string label, Bitmap screenshot, int crosshairX, int crosshairY, TargetMatch? marker)
+    {
+        double? targetX = null, targetY = null;
+        if (marker is { } match)
+        {
+            targetX = match.Point.X;
+            targetY = match.Point.Y + ComputeChestOffsetY(match);
+        }
+
+        DebugCapture.Save(_debugCaptureDir, label, screenshot, new (string, object?)[]
+        {
+            ("CrosshairX", crosshairX),
+            ("CrosshairY", crosshairY),
+            ("MarkerFound", marker != null),
+            ("MarkerX", marker?.Point.X),
+            ("MarkerY", marker?.Point.Y),
+            ("MarkerHeight", marker?.Height),
+            ("TargetX", targetX),
+            ("TargetY", targetY),
+        });
     }
 
     // Chest offset scales with how big the marker appears (closer = bigger marker =
@@ -401,7 +462,15 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private void PerformSnapCorrection()
     {
         var region = GetAimRegion(out var crosshairX, out var crosshairY);
-        var marker = DetectMarker(region);
+        using var screenshot = ScreenCapture.CaptureRegion(region);
+        var marker = DetectMarkerFromBitmap(screenshot);
+
+        if (_config.AimAssist.DebugCaptureEnabled)
+        {
+            // Snapshot of the screen and the computed target the instant before the
+            // mouse is moved, i.e. what the correction is about to do.
+            SaveDebugSnapshot("release_before", screenshot, crosshairX, crosshairY, marker);
+        }
 
         if (marker is not { } match)
             return;
