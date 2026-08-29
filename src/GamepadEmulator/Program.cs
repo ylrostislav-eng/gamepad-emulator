@@ -47,6 +47,10 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly List<(long TimestampMs, double X, double Y)> _trackingHistory = new();
     private PoseDetector? _poseDetector;
     private string _poseModelPath = "";
+    private int _poseLoadGeneration;
+    private volatile bool _poseSwapPending;
+    private PoseDetector? _pendingPoseDetector;
+    private (string Message, ToolTipIcon Icon)? _pendingPoseNotice;
 
     private bool _enabled = true;
     private bool _aimAssistEnabled;
@@ -99,14 +103,6 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             ContextMenuStrip = menu,
         };
         _trayIcon.DoubleClick += (_, _) => OnToggleEnabled(_enabledMenuItem, EventArgs.Empty);
-
-        // LoadConfig() ran before _trayIcon existed, so a pose-model load failure on
-        // first startup couldn't show a balloon tip yet - surface it now instead.
-        if (_config.AimAssist.UsePoseDetection && _poseDetector == null)
-        {
-            _trayIcon.ShowBalloonTip(6000, "Gamepad Emulator",
-                "Pose model failed to load at startup - using color-marker detection instead.", ToolTipIcon.Warning);
-        }
     }
 
     private void LoadConfig()
@@ -162,16 +158,24 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         }
     }
 
-    // (Re)loads the ONNX pose model when UsePoseDetection is on and the resolved path
-    // changed (including on the tray menu's "Reload mapping"). Loading it takes real
-    // time (model init + DirectML setup), so it only happens when actually needed, and
-    // any failure falls back to the color-marker path rather than crashing the app.
+    // Kicks off (re)loading the ONNX pose model in the BACKGROUND when UsePoseDetection
+    // is on and the resolved path changed (including on the tray menu's "Reload
+    // mapping"). Model init + DirectML setup can take a while, and on a bad
+    // GPU/driver combo could even hang - this must never run on the UI thread, or the
+    // whole app (tray icon, message loop, the ability to Exit at all) freezes solid
+    // until Windows itself is rebooted. The actual swap into _poseDetector happens
+    // later, on the UI thread, from OnAimAssistTick - see ApplyPendingPoseSwap.
     private void LoadPoseDetector(string exeDir)
     {
         if (!_config.AimAssist.UsePoseDetection)
         {
-            _poseDetector?.Dispose();
-            _poseDetector = null;
+            _poseLoadGeneration++;
+            if (_poseModelPath != "")
+            {
+                _pendingPoseDetector = null;
+                _pendingPoseNotice = null;
+                _poseSwapPending = true;
+            }
             _poseModelPath = "";
             return;
         }
@@ -183,25 +187,61 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (_poseDetector != null && _poseModelPath == poseModelPath)
             return;
 
-        _poseDetector?.Dispose();
-        _poseDetector = null;
         _poseModelPath = poseModelPath;
+        var generation = ++_poseLoadGeneration;
 
-        if (!File.Exists(poseModelPath))
+        Task.Run(() =>
         {
-            _trayIcon?.ShowBalloonTip(6000, "Gamepad Emulator",
-                $"Pose model not found: {poseModelPath}. Falling back to color-marker detection.", ToolTipIcon.Warning);
+            PoseDetector? loaded = null;
+            (string Message, ToolTipIcon Icon)? notice = null;
+
+            if (!File.Exists(poseModelPath))
+            {
+                notice = ($"Pose model not found: {poseModelPath}. Falling back to color-marker detection.", ToolTipIcon.Warning);
+            }
+            else
+            {
+                try
+                {
+                    loaded = new PoseDetector(poseModelPath);
+                }
+                catch (Exception ex)
+                {
+                    notice = ($"Failed to load pose model: {ex.Message}. Falling back to color-marker detection.", ToolTipIcon.Error);
+                }
+            }
+
+            if (generation != _poseLoadGeneration)
+            {
+                // Superseded by a newer LoadConfig() call (e.g. a quick second "Reload
+                // mapping") while this was loading - discard rather than commit stale state.
+                loaded?.Dispose();
+                return;
+            }
+
+            _pendingPoseDetector = loaded;
+            _pendingPoseNotice = notice;
+            _poseSwapPending = true;
+        });
+    }
+
+    // Applies a pose-model load/unload that finished on a background thread (see
+    // LoadPoseDetector). Runs on the UI thread only, so the actual Dispose() of the old
+    // session can never race with an in-flight inference call on it.
+    private void ApplyPendingPoseSwap()
+    {
+        if (!_poseSwapPending)
             return;
-        }
 
-        try
+        _poseSwapPending = false;
+        _poseDetector?.Dispose();
+        _poseDetector = _pendingPoseDetector;
+        _pendingPoseDetector = null;
+
+        if (_pendingPoseNotice is { } notice)
         {
-            _poseDetector = new PoseDetector(poseModelPath);
-        }
-        catch (Exception ex)
-        {
-            _trayIcon?.ShowBalloonTip(6000, "Gamepad Emulator",
-                $"Failed to load pose model: {ex.Message}. Falling back to color-marker detection.", ToolTipIcon.Error);
+            _trayIcon.ShowBalloonTip(6000, "Gamepad Emulator", notice.Message, notice.Icon);
+            _pendingPoseNotice = null;
         }
     }
 
@@ -530,6 +570,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnAimAssistTick()
     {
+        ApplyPendingPoseSwap();
+
         if (_snapOnReleaseButton != null)
         {
             // Continuous pull is unused once snap-on-release is configured -
@@ -698,6 +740,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _controller.Dispose();
         _overlay.Dispose();
         _poseDetector?.Dispose();
+        _pendingPoseDetector?.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();
