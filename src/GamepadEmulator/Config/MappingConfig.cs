@@ -82,4 +82,11 @@ public sealed class AimAssistConfig
     // don't move the mouse at all - kills small residual wobble/idle-animation sway
     // instead of chasing it back and forth.
     public int DeadZonePx { get; set; } = 12;
+
+    // Beyond this distance (px), do one decisive near-full correction instead of the
+    // gentle Strength-scaled one - recovers fast from being knocked off-target (e.g.
+    // by strafing) without needing continuous high-gain correction near the center,
+    // which is what was causing the oscillation.
+    public int SnapThresholdPx { get; set; } = 130;
+    public double SnapStrength { get; set; } = 0.9;
 }

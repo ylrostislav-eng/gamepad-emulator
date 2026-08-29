@@ -43,6 +43,8 @@
     "ShowOverlay": true,
     "CenterOffsetX": 0,
     "CenterOffsetY": 0,
-    "DeadZonePx": 12
+    "DeadZonePx": 12,
+    "SnapThresholdPx": 130,
+    "SnapStrength": 0.9
   }
 }

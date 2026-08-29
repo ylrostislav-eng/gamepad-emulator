@@ -333,12 +333,22 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (dist < Math.Max(0, _config.AimAssist.DeadZonePx))
             return;
 
-        var edgeMultiplier = Math.Max(1.0, _config.AimAssist.EdgeGainMultiplier);
-        var edgeFactor = Math.Clamp(dist / radius, 0.0, 1.0);
-        var strength = Math.Max(0.0, _config.AimAssist.Strength) * (1.0 + (edgeMultiplier - 1.0) * edgeFactor);
-        var maxStep = Math.Max(1, _config.AimAssist.MaxStepPx);
-        var moveX = Math.Clamp((int)Math.Round(dx * strength), -maxStep, maxStep);
-        var moveY = Math.Clamp((int)Math.Round(dy * strength), -maxStep, maxStep);
+        int moveX, moveY;
+        if (dist >= Math.Max(1, _config.AimAssist.SnapThresholdPx))
+        {
+            var snapStrength = Math.Clamp(_config.AimAssist.SnapStrength, 0.0, 1.0);
+            moveX = (int)Math.Round(dx * snapStrength);
+            moveY = (int)Math.Round(dy * snapStrength);
+        }
+        else
+        {
+            var edgeMultiplier = Math.Max(1.0, _config.AimAssist.EdgeGainMultiplier);
+            var edgeFactor = Math.Clamp(dist / radius, 0.0, 1.0);
+            var strength = Math.Max(0.0, _config.AimAssist.Strength) * (1.0 + (edgeMultiplier - 1.0) * edgeFactor);
+            var maxStep = Math.Max(1, _config.AimAssist.MaxStepPx);
+            moveX = Math.Clamp((int)Math.Round(dx * strength), -maxStep, maxStep);
+            moveY = Math.Clamp((int)Math.Round(dy * strength), -maxStep, maxStep);
+        }
 
         MouseInput.MoveRelative(moveX, moveY);
     }
