@@ -102,3 +102,4 @@ public sealed class AimAssistConfig
     // game's mouse sensitivity scales it. If the snap flies past the target, lower
     // this (e.g. 0.3); if it falls short, raise it. Tune in one direction at a time.
     public double SnapGain { get; set; } = 0.35;
+}
