@@ -33,5 +33,20 @@
   "MouseButtonToButton": {
     "Left": "RightShoulder",
     "Right": "RightTrigger"
+  },
+
+  "AimAssist": {
+    "Enabled": false,
+    "ToggleHotkey": "F10",
+    "ProbeHotkey": "F11",
+    "ColorR": 220,
+    "ColorG": 30,
+    "ColorB": 30,
+    "ColorTolerance": 35,
+    "RegionWidth": 500,
+    "RegionHeight": 400,
+    "PixelStep": 2,
+    "Strength": 1.0,
+    "PullPerTick": 0.15
   }
 }

@@ -2,6 +2,7 @@ using System.Text.Json;
 using GamepadEmulator.Config;
 using GamepadEmulator.Input;
 using GamepadEmulator.Virtual;
+using GamepadEmulator.Vision;
 
 namespace GamepadEmulator;
 
@@ -24,16 +25,20 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _enabledMenuItem;
     private readonly LowLevelHooks _hooks;
     private readonly System.Windows.Forms.Timer _tickTimer;
+    private readonly System.Windows.Forms.Timer _aimAssistTimer;
     private readonly VirtualXbox360Controller _controller;
 
     private MappingConfig _config = new();
     private Keys _toggleKey = Keys.F9;
+    private Keys _aimAssistToggleKey = Keys.F10;
+    private Keys _colorProbeKey = Keys.F11;
     private readonly Dictionary<Keys, string> _keyToButton = new();
     private readonly Dictionary<Keys, string[]> _keyToButtonCombo = new();
     private readonly Dictionary<MouseButtons, string> _mouseButtonToButton = new();
     private Keys _leftUp, _leftDown, _leftLeft, _leftRight;
 
     private bool _enabled = true;
+    private bool _aimAssistEnabled;
     private bool _leftUpHeld, _leftDownHeld, _leftLeftHeld, _leftRightHeld;
     private double _rightStickX, _rightStickY;
 
@@ -56,6 +61,10 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _tickTimer = new System.Windows.Forms.Timer { Interval = 16 };
         _tickTimer.Tick += (_, _) => OnTick();
         _tickTimer.Start();
+
+        _aimAssistTimer = new System.Windows.Forms.Timer { Interval = 33 };
+        _aimAssistTimer.Tick += (_, _) => OnAimAssistTick();
+        _aimAssistTimer.Start();
 
         _enabledMenuItem = new ToolStripMenuItem("Enabled", null, OnToggleEnabled) { Checked = _enabled };
         var reloadItem = new ToolStripMenuItem("Reload mapping", null, (_, _) => LoadConfig());
@@ -88,6 +97,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _config = JsonSerializer.Deserialize<MappingConfig>(json, JsonOptions) ?? new MappingConfig();
 
         _toggleKey = Enum.TryParse<Keys>(_config.ToggleHotkey, ignoreCase: true, out var toggle) ? toggle : Keys.F9;
+        _aimAssistToggleKey = Enum.TryParse<Keys>(_config.AimAssist.ToggleHotkey, ignoreCase: true, out var aimToggle) ? aimToggle : Keys.F10;
+        _colorProbeKey = Enum.TryParse<Keys>(_config.AimAssist.ProbeHotkey, ignoreCase: true, out var probe) ? probe : Keys.F11;
+        _aimAssistEnabled = _config.AimAssist.Enabled;
 
         _leftUp = ParseKey(_config.LeftStick.Up, Keys.W);
         _leftDown = ParseKey(_config.LeftStick.Down, Keys.S);
@@ -121,7 +133,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private bool ShouldSuppressKey(Keys key)
     {
-        if (key == _toggleKey)
+        if (key == _toggleKey || key == _aimAssistToggleKey || key == _colorProbeKey)
             return false;
 
         if (!IsActiveNow() || !_config.BlockPhysicalInputForMappedKeys)
@@ -171,6 +183,22 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (key == _toggleKey)
         {
             ToggleEnabled();
+            return;
+        }
+
+        if (key == _aimAssistToggleKey)
+        {
+            _aimAssistEnabled = !_aimAssistEnabled;
+            _trayIcon.ShowBalloonTip(1200, "Gamepad Emulator",
+                _aimAssistEnabled ? "Aim-assist: ON" : "Aim-assist: OFF", ToolTipIcon.Info);
+            return;
+        }
+
+        if (key == _colorProbeKey)
+        {
+            var color = ScreenCapture.GetPixelColor(Cursor.Position);
+            _trayIcon.ShowBalloonTip(4000, "Color probe",
+                $"R={color.R} G={color.G} B={color.B}  (put these into AimAssist.ColorR/G/B)", ToolTipIcon.Info);
             return;
         }
 
@@ -244,6 +272,42 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _controller.SetRightStick(outX, outY);
     }
 
+    private void OnAimAssistTick()
+    {
+        if (!_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
+            return;
+
+        var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+        var w = Math.Max(2, _config.AimAssist.RegionWidth);
+        var h = Math.Max(2, _config.AimAssist.RegionHeight);
+        var region = new Rectangle(
+            screen.X + (screen.Width - w) / 2,
+            screen.Y + (screen.Height - h) / 2,
+            w, h);
+
+        using var capture = ScreenCapture.CaptureRegion(region);
+        var targetColor = System.Drawing.Color.FromArgb(
+            _config.AimAssist.ColorR, _config.AimAssist.ColorG, _config.AimAssist.ColorB);
+        var match = TargetDetector.FindNearestMatch(
+            capture, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
+
+        if (match is not { } point)
+            return;
+
+        var dx = point.X - w / 2.0;
+        var dy = point.Y - h / 2.0;
+        var maxDist = Math.Sqrt(w * (double)w + h * (double)h) / 2.0;
+        if (maxDist <= 0)
+            return;
+
+        var pullX = Math.Clamp(dx / maxDist * _config.AimAssist.Strength, -1.0, 1.0);
+        var pullY = Math.Clamp(-dy / maxDist * _config.AimAssist.Strength, -1.0, 1.0);
+
+        var pullPerTick = Math.Clamp(_config.AimAssist.PullPerTick, 0.0, 1.0);
+        _rightStickX = Math.Clamp(_rightStickX + pullX * pullPerTick, -1.0, 1.0);
+        _rightStickY = Math.Clamp(_rightStickY + pullY * pullPerTick, -1.0, 1.0);
+    }
+
     private void OnToggleEnabled(object? sender, EventArgs e) => ToggleEnabled();
 
     private void ToggleEnabled()
@@ -264,6 +328,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private void ExitApp()
     {
         _tickTimer.Stop();
+        _aimAssistTimer.Stop();
         _hooks.Dispose();
         _controller.Dispose();
         _trayIcon.Visible = false;
