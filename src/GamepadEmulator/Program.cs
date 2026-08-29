@@ -344,14 +344,22 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _controller.SetRightStick(outX, outY);
     }
 
-    // The whole primary screen is searched for the marker - no circular limit. Returns
-    // the region to capture (the full screen) plus where the crosshair sits within it.
+    // Effectively the whole primary screen is searched for the marker, minus a
+    // configurable band at the top/bottom that's excluded to avoid latching onto
+    // screen-anchored HUD elements (health bar, nameplate) instead of the actual
+    // in-world enemy marker. Returns the region to capture plus where the
+    // crosshair sits within it (in the returned region's local coordinates).
     private Rectangle GetAimRegion(out int crosshairX, out int crosshairY)
     {
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+        var ignoreTop = Math.Max(0, _config.AimAssist.IgnoreTopPx);
+        var ignoreBottom = Math.Max(0, _config.AimAssist.IgnoreBottomPx);
+        var height = Math.Max(1, screen.Height - ignoreTop - ignoreBottom);
+
         crosshairX = screen.Width / 2 + _config.AimAssist.CenterOffsetX;
-        crosshairY = screen.Height / 2 + _config.AimAssist.CenterOffsetY;
-        return screen;
+        crosshairY = screen.Height / 2 + _config.AimAssist.CenterOffsetY - ignoreTop;
+
+        return new Rectangle(screen.Left, screen.Top + ignoreTop, screen.Width, height);
     }
 
     private TargetMatch? DetectMarker(Rectangle region)
@@ -400,14 +408,19 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         });
     }
 
-    // Chest offset scales with how big the marker appears (closer = bigger marker =
-    // bigger offset) instead of a single fixed pixel count that's only right at one
-    // distance. Falls back to the fixed ChestOffsetY when the blob is too small/noisy
-    // to measure reliably.
-    private double ComputeChestOffsetY(TargetMatch match) =>
-        match.Height is { } h && h > 0
+    // Fixed offset by default (calibrated from real screenshots) - the marker's own
+    // on-screen size doesn't track distance (see UseMarkerHeightScaling), so it isn't
+    // a usable distance signal. Clamped either way as a safety net against outliers.
+    private double ComputeChestOffsetY(TargetMatch match)
+    {
+        var offset = _config.AimAssist.UseMarkerHeightScaling && match.Height is { } h && h > 0
             ? h * _config.AimAssist.ChestOffsetMarkerRatio
             : _config.AimAssist.ChestOffsetY;
+
+        var min = Math.Max(0, _config.AimAssist.MinChestOffsetY);
+        var max = Math.Max(min + 1, _config.AimAssist.MaxChestOffsetY);
+        return Math.Clamp(offset, min, max);
+    }
 
     private void OnAimAssistTick()
     {

@@ -83,19 +83,26 @@ meant for testing hit/damage registration on your own local build, not for
 playing against other people.
 
 - Continuously knows the crosshair's screen coordinates (screen center +
-  `CenterOffsetX/Y`), and searches the **entire** primary screen for a
-  configurable target color (an enemy marker, health bar, etc) — no fixed
-  detection radius.
+  `CenterOffsetX/Y`), and searches effectively the whole primary screen for a
+  configurable target color (an enemy marker, health bar, etc), minus a
+  configurable band excluded at the top/bottom (`IgnoreTopPx`/`IgnoreBottomPx`)
+  to avoid latching onto screen-anchored HUD elements (health/stamina bar,
+  nameplate) instead of the actual in-world marker.
 - When `SnapOnReleaseButton` is set (e.g. `"Left"`), the aim isn't pulled
   continuously — the real button-up is held back, the mouse jumps once,
   instantly, to the computed target the moment you release the button, and
   the real release is then let through after `SnapReleaseDelayMs` so the
   game's camera has time to visually catch up before the shot fires.
-- The vertical offset from the marker down to the chest is **auto-calculated**
-  from the marker's own measured on-screen size (`ChestOffsetMarkerRatio x
-  detected marker height`), so it scales automatically with distance instead
-  of using one fixed pixel count. `ChestOffsetY` is only a fallback for when
-  the marker blob is too small/noisy to measure.
+- The vertical offset from the marker down to the chest is a fixed pixel
+  count, `ChestOffsetY` (calibrated from real screenshots, ~165px at
+  2560x1440). An earlier version tried to auto-scale this from the marker's
+  own measured on-screen size, but testing showed the marker is a
+  fixed-screen-size HUD icon whose apparent size does **not** track distance
+  — so there was no usable signal there. `UseMarkerHeightScaling` +
+  `ChestOffsetMarkerRatio` are left in, off by default, in case a
+  differently-implemented marker does scale with distance.
+- `MinChestOffsetY`/`MaxChestOffsetY` clamp the final offset either way, as a
+  safety net against one bad reading producing a wild correction.
 - Toggled independently of the remap with `F10`; `F11` reads the color under
   the mouse cursor into a tray balloon tip, so you can hover the enemy
   marker in-game and copy the exact `ColorR/G/B` into `mapping.json`.
@@ -107,8 +114,12 @@ playing against other people.
   "ProbeHotkey": "F11",
   "ColorR": 220, "ColorG": 30, "ColorB": 30,
   "ColorTolerance": 35,
-  "ChestOffsetY": 90,
-  "ChestOffsetMarkerRatio": 3.5,
+  "ChestOffsetY": 165,
+  "UseMarkerHeightScaling": false,
+  "MinChestOffsetY": 60,
+  "MaxChestOffsetY": 280,
+  "IgnoreTopPx": 110,
+  "IgnoreBottomPx": 170,
   "SnapOnReleaseButton": "Left",
   "SnapGain": 0.35,
   "SnapReleaseDelayMs": 90,
@@ -118,12 +129,29 @@ playing against other people.
 ```
 
 Tuning knobs for the snap-on-release mode:
+- `ChestOffsetY` — vertical pixel gap from the marker down to the chest, at
+  your resolution. Use the debug-capture screenshots (below) to measure it
+  precisely: pick a shot, measure the marker-to-chest gap in the PNG, and set
+  this to that value.
 - `SnapGain` — calibration multiplier for the computed pixel offset. If the
   snap overshoots past the target, lower it (e.g. `0.25`); if it falls
   short, raise it. Tune one direction at a time.
 - `SnapReleaseDelayMs` — how long (ms) the real button release is held back
   after the jump, giving the game's camera time to finish turning before the
   shot registers. Raise it if big corrections still land short.
+- `IgnoreTopPx`/`IgnoreBottomPx` — if a shot's debug log shows `MarkerFound`
+  at a position that doesn't move between `press`/`release_before`/
+  `release_after` even though the camera turned, that's almost always a
+  screen-anchored HUD element being mistaken for the marker, not the marker
+  itself — increase the matching margin to exclude it, or narrow
+  `ColorTolerance` and re-probe the marker's exact color with `F11`.
+
+For a permanent, distance-proof fix instead of a calibrated fixed pixel
+offset: since this is your own game with source access, the most robust
+option is to move the enemy marker's own anchor in the game code to the
+chest position in 3D world space (or add a second, differently-colored
+marker there) — then this tool can aim directly at it with `ChestOffsetY: 0`,
+correct at any distance, no screen-space guessing needed.
 
 If the game runs in exclusive fullscreen, screen capture may not work;
 switch it to windowed/borderless for testing.

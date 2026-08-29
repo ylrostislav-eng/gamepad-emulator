@@ -49,14 +49,38 @@ public sealed class AimAssistConfig
     public int ColorG { get; set; } = 30;
     public int ColorB { get; set; } = 30;
     public int ColorTolerance { get; set; } = 35;
-    // Fallback fixed offset (px) used only when the marker blob is too small/noisy to
-    // measure its size reliably. Normally the offset scales with MarkerHeightRatio.
-    public int ChestOffsetY { get; set; } = 90;
 
-    // Chest offset = detected marker height (px) x this ratio. Scales the offset
-    // automatically with how big/close the marker appears on screen, instead of a
-    // fixed pixel count that's only right at one specific distance.
+    // Fixed vertical offset (px) from the detected marker down to the chest.
+    // Calibrated from real screenshots at ~2560x1440 (a ~160-170px gap between the
+    // marker and the chest). Used directly unless UseMarkerHeightScaling is on.
+    public int ChestOffsetY { get; set; } = 165;
+
+    // OFF by default: measured marker blob height turned out to be ~constant
+    // (~18px) across near and far shots in testing - the enemy marker is a
+    // fixed-screen-size HUD icon, not a world-space silhouette, so its apparent
+    // size does NOT track distance. Scaling the chest offset by it just produced
+    // a different near-constant offset, not a real distance-adaptive one. Left in
+    // as an opt-in in case a differently-implemented marker (or a different game)
+    // does scale with distance.
+    public bool UseMarkerHeightScaling { get; set; } = false;
+
+    // Chest offset = detected marker height (px) x this ratio, only when
+    // UseMarkerHeightScaling is true.
     public double ChestOffsetMarkerRatio { get; set; } = 3.5;
+
+    // Safety clamp applied to the final chest offset regardless of how it was
+    // computed - guards against a single bad blob-size reading (e.g. two markers
+    // merging in a rescan window) producing a wildly wrong correction.
+    public int MinChestOffsetY { get; set; } = 60;
+    public int MaxChestOffsetY { get; set; } = 280;
+
+    // Vertical bands (px) excluded from marker search at the top/bottom of the
+    // screen, to avoid latching onto screen-anchored HUD elements (health/stamina
+    // bar, nameplate) that happen to match the target color instead of the actual
+    // in-world enemy marker. The marker search still covers effectively the whole
+    // game view otherwise.
+    public int IgnoreTopPx { get; set; } = 110;
+    public int IgnoreBottomPx { get; set; } = 170;
 
     public int PixelStep { get; set; } = 2;
     public double Strength { get; set; } = 0.15;
