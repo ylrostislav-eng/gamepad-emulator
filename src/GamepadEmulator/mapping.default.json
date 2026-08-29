@@ -68,6 +68,9 @@
     "CustomIouThreshold": 0.5,
 
     "DebugCaptureEnabled": true,
-    "DebugCaptureDir": "debug_captures"
+    "DebugCaptureDir": "debug_captures",
+
+    "ManualCaptureButton": "XButton1",
+    "ManualCaptureDir": "manual_captures"
   }
 }

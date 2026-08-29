@@ -329,6 +329,21 @@ Turn this off (`DebugCaptureEnabled: false`) once you're done tuning — with
 a whole shot's worth of `hold` rows now saved instead of just two, it adds
 up in disk space and background-thread work fast.
 
+### Manual capture (screenshots on demand, for building a labeling dataset)
+
+Press `ManualCaptureButton` (default `XButton1` — the mouse's side "back"
+button, often labeled M4 on gaming mice) at any moment to save one plain
+screenshot to `ManualCaptureDir` (default `manual_captures/`, next to the
+exe) — no aim-assist needed, works whether or not you're holding the
+hard-lock button. Handy for walking up to an enemy and grabbing shots of
+specific poses/distances/lighting you want to make sure are covered when
+building or expanding a [custom detection](#custom-detection-a-model-fine-tuned-on-your-own-game)
+dataset, on top of whatever the automatic debug capture already collected
+during normal play. A tray balloon confirms each save (or reports why it
+failed). If the button doesn't seem to trigger anything, your mouse's own
+software may be remapping that side button to something else before Windows
+ever sees it as a real button press — check its settings.
+
 ## Project layout
 
 ```

@@ -91,10 +91,11 @@ public sealed class LowLevelHooks : IDisposable
                 _haveLastMousePos = true;
             }
 
-            var button = MessageToButton(msg);
+            var button = MessageToButton(msg, data.mouseData);
             if (button != MouseButtons.None && (data.flags & NativeMethods.LLMHF_INJECTED) == 0)
             {
-                var isDown = msg is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_MBUTTONDOWN;
+                var isDown = msg is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN
+                    or NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_XBUTTONDOWN;
                 if (isDown)
                     MouseButtonDown?.Invoke(button);
                 else
@@ -108,11 +109,17 @@ public sealed class LowLevelHooks : IDisposable
         return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
     }
 
-    private static MouseButtons MessageToButton(int msg) => msg switch
+    // Left/Right/Middle are identifiable from the message alone; the side ("back"/
+    // "forward", often labeled M4/M5 on gaming mice) buttons both share
+    // WM_XBUTTONDOWN/UP and are distinguished by the high word of mouseData
+    // (1 = XBUTTON1, 2 = XBUTTON2 - standard Win32 convention).
+    private static MouseButtons MessageToButton(int msg, uint mouseData) => msg switch
     {
         NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP => MouseButtons.Left,
         NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP => MouseButtons.Right,
         NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP => MouseButtons.Middle,
+        NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP =>
+            ((mouseData >> 16) & 0xFFFF) == 1 ? MouseButtons.XButton1 : MouseButtons.XButton2,
         _ => MouseButtons.None,
     };
 

@@ -191,4 +191,16 @@ public sealed class AimAssistConfig
 
     // Folder (relative to the exe) where debug screenshots and log.csv are written.
     public string DebugCaptureDir { get; set; } = "debug_captures";
+
+    // Mouse button that, on press, saves a plain screenshot on demand - for building or
+    // expanding a labeling dataset by hand (e.g. specific poses/angles/distances you
+    // want to make sure are covered), independent of the automatic capture during a
+    // hard-lock hold. Names: Left/Right/Middle/XButton1/XButton2 - XButton1/XButton2 are
+    // the mouse's side ("back"/"forward") buttons, often labeled M4/M5 on gaming mice.
+    // If your mouse's own software remaps them to something else, this may not see them
+    // - check the mouse's button settings if it doesn't trigger. Empty = disabled.
+    public string ManualCaptureButton { get; set; } = "XButton1";
+
+    // Folder (relative to the exe) where manual screenshots are saved.
+    public string ManualCaptureDir { get; set; } = "manual_captures";
 }

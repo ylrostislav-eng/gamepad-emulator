@@ -47,6 +47,12 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private DetectorMode _detectionMode = DetectorMode.ColorMarker;
     private string _debugCaptureDir = "";
 
+    private MouseButtons? _manualCaptureButton;
+    private string _manualCaptureDir = "";
+    // Set on the input hook thread (button press), consumed on the background
+    // detection loop thread - volatile so the request is visible promptly.
+    private volatile bool _manualCaptureRequested;
+
     // Runaway-lock watchdog state - all only ever touched from the UI thread
     // (OnMouseButton and OnPullTick both run there), so no synchronization needed.
     private long _lockEngagedAtMs;
@@ -171,6 +177,12 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _debugCaptureDir = Path.Combine(exeDir, string.IsNullOrWhiteSpace(_config.AimAssist.DebugCaptureDir)
             ? "debug_captures"
             : _config.AimAssist.DebugCaptureDir);
+        _manualCaptureButton = Enum.TryParse<MouseButtons>(_config.AimAssist.ManualCaptureButton, ignoreCase: true, out var captureBtn)
+            ? captureBtn
+            : null;
+        _manualCaptureDir = Path.Combine(exeDir, string.IsNullOrWhiteSpace(_config.AimAssist.ManualCaptureDir)
+            ? "manual_captures"
+            : _config.AimAssist.ManualCaptureDir);
 
         LoadPoseDetector(exeDir);
         LoadCustomDetector(exeDir);
@@ -512,6 +524,11 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
             }
         }
 
+        // Same pattern: just flips a flag, no capture/IO on the hook thread. The
+        // background detection loop picks it up and saves the screenshot.
+        if (pressed && button == _manualCaptureButton && IsActiveNow())
+            _manualCaptureRequested = true;
+
         if (pressed && !IsActiveNow())
             return;
 
@@ -644,6 +661,12 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
         while (!token.IsCancellationRequested)
         {
+            if (_manualCaptureRequested)
+            {
+                _manualCaptureRequested = false;
+                SaveManualCapture();
+            }
+
             if (!_isDrawing || !_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
             {
                 if (wasDrawing)
@@ -687,6 +710,27 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
         if (_config.AimAssist.DebugCaptureEnabled)
             SaveDebugSnapshot(debugLabel, capture, crosshairX, crosshairY, detected?.Marker, detected?.Pose, detected?.Custom);
+    }
+
+    // Saves a plain screenshot (same framing as the detector sees - GetAimRegion, so it
+    // matches the existing training-data screenshots) on demand, for building/expanding
+    // a labeling dataset by hand. Runs on the background detection loop thread, never
+    // the UI/input-hook thread - same reasoning as everywhere else in this file.
+    private void SaveManualCapture()
+    {
+        try
+        {
+            var region = GetAimRegion(out _, out _);
+            using var capture = ScreenCapture.CaptureRegion(region);
+            Directory.CreateDirectory(_manualCaptureDir);
+            var fileName = $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_manual.png";
+            capture.Save(Path.Combine(_manualCaptureDir, fileName), System.Drawing.Imaging.ImageFormat.Png);
+            _trayIcon.ShowBalloonTip(1000, "Gamepad Emulator", $"Screenshot saved: {fileName}", ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            _trayIcon.ShowBalloonTip(3000, "Gamepad Emulator", $"Screenshot failed: {ex.Message}", ToolTipIcon.Error);
+        }
     }
 
     // Effectively the whole primary screen is searched for the target, minus a
