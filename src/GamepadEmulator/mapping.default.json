@@ -1,5 +1,5 @@
 {
-  "BlockPhysicalInputForMappedKeys": true,
+  "BlockPhysicalInputForMappedKeys": false,
   "ToggleHotkey": "F9",
   "TargetProcessName": "",
 
@@ -17,36 +17,24 @@
     "InvertY": false
   },
 
-  "KeyToButton": {
-    "ShiftKey": "A",
-    "Space": "B",
-    "F": "X",
-    "R": "Left"
-  },
+  "KeyToButton": {},
 
-  "KeyToButtonCombo": {
-    "D1": ["LeftTrigger", "Y"],
-    "D2": ["LeftTrigger", "X"],
-    "D3": ["LeftTrigger", "A"]
-  },
+  "KeyToButtonCombo": {},
 
-  "MouseButtonToButton": {
-    "Left": "RightShoulder",
-    "Right": "RightTrigger"
-  },
+  "MouseButtonToButton": {},
 
   "AimAssist": {
-    "Enabled": false,
+    "Enabled": true,
     "ToggleHotkey": "F10",
     "ProbeHotkey": "F11",
     "ColorR": 220,
     "ColorG": 30,
     "ColorB": 30,
     "ColorTolerance": 35,
-    "RegionWidth": 500,
-    "RegionHeight": 400,
+    "DetectionRadius": 220,
+    "ChestOffsetY": 90,
     "PixelStep": 2,
-    "Strength": 1.0,
-    "PullPerTick": 0.15
+    "Strength": 0.15,
+    "ShowOverlay": true
   }
 }

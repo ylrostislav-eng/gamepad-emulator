@@ -43,9 +43,9 @@ public sealed class AimAssistConfig
     public int ColorG { get; set; } = 30;
     public int ColorB { get; set; } = 30;
     public int ColorTolerance { get; set; } = 35;
-    public int RegionWidth { get; set; } = 500;
-    public int RegionHeight { get; set; } = 400;
+    public int DetectionRadius { get; set; } = 220;
+    public int ChestOffsetY { get; set; } = 90;
     public int PixelStep { get; set; } = 2;
-    public double Strength { get; set; } = 1.0;
-    public double PullPerTick { get; set; } = 0.15;
+    public double Strength { get; set; } = 0.15;
+    public bool ShowOverlay { get; set; } = true;
 }

@@ -27,6 +27,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _tickTimer;
     private readonly System.Windows.Forms.Timer _aimAssistTimer;
     private readonly VirtualXbox360Controller _controller;
+    private readonly AimOverlayForm _overlay;
 
     private MappingConfig _config = new();
     private Keys _toggleKey = Keys.F9;
@@ -47,6 +48,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         LoadConfig();
 
         _controller = new VirtualXbox360Controller();
+        _overlay = new AimOverlayForm();
 
         _hooks = new LowLevelHooks();
         _hooks.KeyDown += OnKeyDown;
@@ -275,37 +277,50 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
     private void OnAimAssistTick()
     {
         if (!_aimAssistEnabled || !_config.AimAssist.Enabled || !IsActiveNow())
+        {
+            _overlay.Hide();
             return;
+        }
 
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-        var w = Math.Max(2, _config.AimAssist.RegionWidth);
-        var h = Math.Max(2, _config.AimAssist.RegionHeight);
+        var radius = Math.Max(10, _config.AimAssist.DetectionRadius);
+        var side = radius * 2;
         var region = new Rectangle(
-            screen.X + (screen.Width - w) / 2,
-            screen.Y + (screen.Height - h) / 2,
-            w, h);
+            screen.X + screen.Width / 2 - radius,
+            screen.Y + screen.Height / 2 - radius,
+            side, side);
+
+        if (_config.AimAssist.ShowOverlay)
+            _overlay.ShowAt(region.Left, region.Top, side, side);
+        else
+            _overlay.Hide();
 
         using var capture = ScreenCapture.CaptureRegion(region);
         var targetColor = System.Drawing.Color.FromArgb(
             _config.AimAssist.ColorR, _config.AimAssist.ColorG, _config.AimAssist.ColorB);
-        var match = TargetDetector.FindNearestMatch(
+        var marker = TargetDetector.FindNearestMatch(
             capture, targetColor, _config.AimAssist.ColorTolerance, Math.Max(1, _config.AimAssist.PixelStep));
 
-        if (match is not { } point)
+        if (marker is not { } markerPoint)
             return;
 
-        var dx = point.X - w / 2.0;
-        var dy = point.Y - h / 2.0;
-        var maxDist = Math.Sqrt(w * (double)w + h * (double)h) / 2.0;
-        if (maxDist <= 0)
+        var aimX = markerPoint.X;
+        var aimY = markerPoint.Y + _config.AimAssist.ChestOffsetY;
+
+        var centerX = side / 2.0;
+        var centerY = side / 2.0;
+        var dx = aimX - centerX;
+        var dy = aimY - centerY;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+
+        if (dist > radius)
             return;
 
-        var pullX = Math.Clamp(dx / maxDist * _config.AimAssist.Strength, -1.0, 1.0);
-        var pullY = Math.Clamp(-dy / maxDist * _config.AimAssist.Strength, -1.0, 1.0);
+        var strength = Math.Clamp(_config.AimAssist.Strength, 0.0, 1.0);
+        var moveX = (int)Math.Round(dx * strength);
+        var moveY = (int)Math.Round(dy * strength);
 
-        var pullPerTick = Math.Clamp(_config.AimAssist.PullPerTick, 0.0, 1.0);
-        _rightStickX = Math.Clamp(_rightStickX + pullX * pullPerTick, -1.0, 1.0);
-        _rightStickY = Math.Clamp(_rightStickY + pullY * pullPerTick, -1.0, 1.0);
+        MouseInput.MoveRelative(moveX, moveY);
     }
 
     private void OnToggleEnabled(object? sender, EventArgs e) => ToggleEnabled();
@@ -331,6 +346,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _aimAssistTimer.Stop();
         _hooks.Dispose();
         _controller.Dispose();
+        _overlay.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();

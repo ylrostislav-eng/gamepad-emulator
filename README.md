@@ -76,6 +76,43 @@ picked up automatically and won't be overwritten by rebuilds.
 
 After editing, use the tray icon's "Reload mapping" or restart the app.
 
+## Aim assist (screen-capture, for local QA damage testing)
+
+Separate from the gamepad remap above: a screen-capture based aim helper
+meant for testing hit/damage registration on your own local build, not for
+playing against other people.
+
+- Watches a circular region around the crosshair for a configurable target
+  color (an enemy marker, health bar, etc).
+- When a match is inside that circle, nudges the real mouse cursor (via
+  `SendInput`, so it affects raw-input camera look the same as a physical
+  mouse) toward the match, offset down by `ChestOffsetY` pixels to land on
+  the body instead of the marker itself.
+- Draws a green circle overlay on screen showing the detection radius while
+  active.
+- Toggled independently of the remap with `F10`; `F11` reads the color under
+  the mouse cursor into a tray balloon tip, so you can hover the enemy
+  marker in-game and copy the exact `ColorR/G/B` into `mapping.json`.
+
+```json
+"AimAssist": {
+  "Enabled": true,
+  "ToggleHotkey": "F10",
+  "ProbeHotkey": "F11",
+  "ColorR": 220, "ColorG": 30, "ColorB": 30,
+  "ColorTolerance": 35,
+  "DetectionRadius": 220,
+  "ChestOffsetY": 90,
+  "Strength": 0.15,
+  "ShowOverlay": true
+}
+```
+
+`Strength` is the fraction of the remaining distance closed per tick (~30
+times/sec) — higher snaps harder, lower feels like a gentle pull. If the
+game runs in exclusive fullscreen, screen capture may not work; switch it to
+windowed/borderless for testing.
+
 ## Project layout
 
 ```
