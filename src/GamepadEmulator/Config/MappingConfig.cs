@@ -77,4 +77,9 @@ public sealed class AimAssistConfig
     // (e.g. residual offset from display scaling). Positive Y = crosshair is below center.
     public int CenterOffsetX { get; set; } = 0;
     public int CenterOffsetY { get; set; } = 0;
+
+    // If the (smoothed) target is already within this many pixels of the crosshair,
+    // don't move the mouse at all - kills small residual wobble/idle-animation sway
+    // instead of chasing it back and forth.
+    public int DeadZonePx { get; set; } = 12;
 }

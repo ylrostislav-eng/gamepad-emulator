@@ -42,6 +42,7 @@
     "EdgeGainMultiplier": 3.0,
     "ShowOverlay": true,
     "CenterOffsetX": 0,
-    "CenterOffsetY": 0
+    "CenterOffsetY": 0,
+    "DeadZonePx": 12
   }
 }

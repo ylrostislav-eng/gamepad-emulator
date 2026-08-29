@@ -330,6 +330,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (dist > radius)
             return;
 
+        if (dist < Math.Max(0, _config.AimAssist.DeadZonePx))
+            return;
+
         var edgeMultiplier = Math.Max(1.0, _config.AimAssist.EdgeGainMultiplier);
         var edgeFactor = Math.Clamp(dist / radius, 0.0, 1.0);
         var strength = Math.Max(0.0, _config.AimAssist.Strength) * (1.0 + (edgeMultiplier - 1.0) * edgeFactor);
