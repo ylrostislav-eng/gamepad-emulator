@@ -95,4 +95,10 @@ public sealed class AimAssistConfig
     // released (e.g. releasing LMB to fire an arrow). Empty = continuous pull
     // (the Strength/Smoothing/etc knobs above) instead.
     public string SnapOnReleaseButton { get; set; } = "";
-}
+
+    // Calibration multiplier for the release snap ONLY: raw on-screen pixel offset
+    // to target is multiplied by this before being sent as a mouse move. 1.0 assumes
+    // 1 injected pixel = 1 screen pixel of camera turn, which is rarely true - the
+    // game's mouse sensitivity scales it. If the snap flies past the target, lower
+    // this (e.g. 0.3); if it falls short, raise it. Tune in one direction at a time.
+    public double SnapGain { get; set; } = 0.35;

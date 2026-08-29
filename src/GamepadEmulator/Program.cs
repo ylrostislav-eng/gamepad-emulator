@@ -398,7 +398,8 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (dist > radius)
             return;
 
-        MouseInput.MoveRelative((int)Math.Round(dx), (int)Math.Round(dy));
+        var gain = Math.Max(0.0, _config.AimAssist.SnapGain);
+        MouseInput.MoveRelative((int)Math.Round(dx * gain), (int)Math.Round(dy * gain));
     }
 
     private void OnToggleEnabled(object? sender, EventArgs e) => ToggleEnabled();
