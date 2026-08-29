@@ -2,6 +2,7 @@
   "BlockPhysicalInputForMappedKeys": false,
   "ToggleHotkey": "F9",
   "TargetProcessName": "MistfallHunter-Win64-Shipping",
+  "GamepadRemapEnabled": false,
 
   "LeftStick": {
     "Up": "W",
@@ -37,7 +38,8 @@
     "Strength": 0.15,
     "Smoothing": 0.65,
     "TickIntervalMs": 80,
-    "MaxStepPx": 45,
+    "MaxStepPx": 90,
+    "EdgeGainMultiplier": 3.0,
     "ShowOverlay": true,
     "CenterOffsetX": 0,
     "CenterOffsetY": 0

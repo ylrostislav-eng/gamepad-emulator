@@ -257,6 +257,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
 
     private void OnTick()
     {
+        if (!_config.GamepadRemapEnabled)
+            return;
+
         var lx = (_leftLeftHeld ? -1.0 : 0.0) + (_leftRightHeld ? 1.0 : 0.0);
         var ly = (_leftDownHeld ? -1.0 : 0.0) + (_leftUpHeld ? 1.0 : 0.0);
         if (lx != 0 && ly != 0)
@@ -327,7 +330,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (dist > radius)
             return;
 
-        var strength = Math.Max(0.0, _config.AimAssist.Strength);
+        var edgeMultiplier = Math.Max(1.0, _config.AimAssist.EdgeGainMultiplier);
+        var edgeFactor = Math.Clamp(dist / radius, 0.0, 1.0);
+        var strength = Math.Max(0.0, _config.AimAssist.Strength) * (1.0 + (edgeMultiplier - 1.0) * edgeFactor);
         var maxStep = Math.Max(1, _config.AimAssist.MaxStepPx);
         var moveX = Math.Clamp((int)Math.Round(dx * strength), -maxStep, maxStep);
         var moveY = Math.Clamp((int)Math.Round(dy * strength), -maxStep, maxStep);

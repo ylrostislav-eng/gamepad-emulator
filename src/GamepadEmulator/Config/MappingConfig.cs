@@ -5,6 +5,12 @@ public sealed class MappingConfig
     public bool BlockPhysicalInputForMappedKeys { get; set; } = true;
     public string ToggleHotkey { get; set; } = "F9";
 
+    // Whether the virtual Xbox 360 controller drives its sticks from WASD/mouse at all.
+    // Leave false when only using the mouse-based AimAssist tool - keeping the virtual
+    // pad "moving" in parallel with native keyboard input makes some games flicker
+    // between showing keyboard and gamepad prompts.
+    public bool GamepadRemapEnabled { get; set; } = true;
+
     // Process name (without .exe) to restrict the remap to; empty = active system-wide.
     public string TargetProcessName { get; set; } = "";
 
@@ -59,7 +65,13 @@ public sealed class AimAssistConfig
 
     // Hard cap on pixels moved in a single tick, regardless of Strength - a safety
     // net against a single correction being big enough to itself cause overshoot.
-    public int MaxStepPx { get; set; } = 45;
+    public int MaxStepPx { get; set; } = 90;
+
+    // Extra pull multiplier applied as the target drifts toward the edge of the
+    // detection circle (1 = no extra pull at the edge, i.e. same as at center).
+    // Gives a strong "snap back" when strafing pushes the target off-center while
+    // staying gentle near the center where oscillation would otherwise start.
+    public double EdgeGainMultiplier { get; set; } = 3.0;
 
     // Manual nudge for where the crosshair actually sits, if it isn't exact screen center
     // (e.g. residual offset from display scaling). Positive Y = crosshair is below center.
