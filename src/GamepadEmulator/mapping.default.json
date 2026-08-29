@@ -1,0 +1,38 @@
+{
+  "BlockPhysicalInputForMappedKeys": true,
+  "ToggleHotkey": "F9",
+
+  "LeftStick": {
+    "Up": "W",
+    "Down": "S",
+    "Left": "A",
+    "Right": "D"
+  },
+
+  "RightStick": {
+    "Sensitivity": 1.0,
+    "Deadzone": 0.05,
+    "DecayPerTick": 0.80,
+    "InvertY": false
+  },
+
+  "KeyToButton": {
+    "Space": "A",
+    "ShiftKey": "B",
+    "E": "X",
+    "Q": "Y",
+    "R": "RightShoulder",
+    "Tab": "Back",
+    "Escape": "Start",
+    "Up": "Up",
+    "Down": "Down",
+    "Left": "Left",
+    "Right": "Right"
+  },
+
+  "MouseButtonToButton": {
+    "Left": "RightTrigger",
+    "Right": "LeftTrigger",
+    "Middle": "RightThumb"
+  }
+}
