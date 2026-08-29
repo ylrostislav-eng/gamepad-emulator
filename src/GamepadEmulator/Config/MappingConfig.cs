@@ -46,6 +46,11 @@ public sealed class AimAssistConfig
     public int DetectionRadius { get; set; } = 220;
     public int ChestOffsetY { get; set; } = 90;
     public int PixelStep { get; set; } = 2;
-    public double Strength { get; set; } = 0.15;
+    public double Strength { get; set; } = 1.0;
     public bool ShowOverlay { get; set; } = true;
+
+    // Manual nudge for where the crosshair actually sits, if it isn't exact screen center
+    // (e.g. residual offset from display scaling). Positive Y = crosshair is below center.
+    public int CenterOffsetX { get; set; } = 0;
+    public int CenterOffsetY { get; set; } = 0;
 }

@@ -64,7 +64,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         _tickTimer.Tick += (_, _) => OnTick();
         _tickTimer.Start();
 
-        _aimAssistTimer = new System.Windows.Forms.Timer { Interval = 33 };
+        _aimAssistTimer = new System.Windows.Forms.Timer { Interval = 16 };
         _aimAssistTimer.Tick += (_, _) => OnAimAssistTick();
         _aimAssistTimer.Start();
 
@@ -285,10 +285,9 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
         var radius = Math.Max(10, _config.AimAssist.DetectionRadius);
         var side = radius * 2;
-        var region = new Rectangle(
-            screen.X + screen.Width / 2 - radius,
-            screen.Y + screen.Height / 2 - radius,
-            side, side);
+        var crosshairX = screen.X + screen.Width / 2 + _config.AimAssist.CenterOffsetX;
+        var crosshairY = screen.Y + screen.Height / 2 + _config.AimAssist.CenterOffsetY;
+        var region = new Rectangle(crosshairX - radius, crosshairY - radius, side, side);
 
         if (_config.AimAssist.ShowOverlay)
             _overlay.ShowAt(region.Left, region.Top, side, side);
@@ -316,7 +315,7 @@ internal sealed class EmulatorApplicationContext : ApplicationContext
         if (dist > radius)
             return;
 
-        var strength = Math.Clamp(_config.AimAssist.Strength, 0.0, 1.0);
+        var strength = Math.Max(0.0, _config.AimAssist.Strength);
         var moveX = (int)Math.Round(dx * strength);
         var moveY = (int)Math.Round(dy * strength);
 

@@ -1,7 +1,7 @@
 {
   "BlockPhysicalInputForMappedKeys": false,
   "ToggleHotkey": "F9",
-  "TargetProcessName": "",
+  "TargetProcessName": "MistfallHunter-Win64-Shipping",
 
   "LeftStick": {
     "Up": "W",
@@ -34,7 +34,9 @@
     "DetectionRadius": 220,
     "ChestOffsetY": 90,
     "PixelStep": 2,
-    "Strength": 0.15,
-    "ShowOverlay": true
+    "Strength": 1.0,
+    "ShowOverlay": true,
+    "CenterOffsetX": 0,
+    "CenterOffsetY": 0
   }
 }
